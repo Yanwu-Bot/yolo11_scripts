@@ -5,7 +5,9 @@ import numpy as np
 
 # 加载YOLOv11n-pose模型
 model = YOLO("./weights/yolo11n-pose.pt")
-img_path = "D:\work\Python\YOLOV11\data\img02.png"
+#图片路径
+img_path = "D:\work\Python\YOLOV11\data\img03.jpg"
+#读取图片
 img = cv2.imread(img_path,cv2.IMREAD_COLOR)
 # 定义关键点索引与名称的对应关系
 dic_points = {

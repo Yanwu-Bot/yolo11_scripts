@@ -97,14 +97,18 @@ def generate_class_map(class_list):
     return {class_name: idx for idx, class_name in enumerate(class_list)}
 
 # Example usage
-class_list = ["aeroplane","bicycle","bird","boat","bottle","bus","car","cat","chair","cow","diningtable","dog","horse","motorbike","person","pottedplant","sheep","sofa","train","tvmonitor"]  # Replace with your list of classes
+# 设置label
+#class_list = ["aeroplane","bicycle","bird","boat","bottle","bus","car","cat","chair","cow","diningtable","dog","horse","motorbike","person","pottedplant","sheep","sofa","train","tvmonitor"]  # Replace with your list of classes
+class_list = ["dog","cat"]
 class_map = generate_class_map(class_list)
 
 # Set input and output directories
-voc_dir = r"D:\work\\Python\\YOLOV11\\VOC2007\\VOC2007"
-output_dir = r"D:\work\\Python\\YOLOV11\\VOC2007"
+# 设置数据集位置和输出位置
+voc_dir = r"D:\work\\Python\\YOLOV11\\VOCDC"
+output_dir = r"D:\work\\Python\\YOLOV11\\VOCDC"
 
 # Set dataset split ratios
+# 设置训练集验证集比例
 train_ratio = 0.7  # Adjust as needed
 val_ratio = 0.2    # Adjust as needed
 
