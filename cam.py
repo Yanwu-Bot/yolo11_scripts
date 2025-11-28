@@ -5,6 +5,11 @@ import time
 import numpy as np
 from angle import *
 
+r_arm = [6,8,10]
+l_arm = [5,7,9]
+r_leg = [12,14,16]
+l_leg = [11,13,15]
+
 cTime=0
 pTime=0
 # 加载YOLOv11n-pose模型
@@ -137,8 +142,15 @@ def draw_point(p_pos):
         radius =5
         #  Draw a circle using the circle() Function
         cv2.circle(frame, circle_center, radius, (0, 0, 255), thickness=-1, lineType=cv2.LINE_AA) 
-# 打开默认摄像头
 
+def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜色，显示内容，显示肢体，投射图像
+    p = get_keypoints(list_p)
+    use_points = [p[limb[0]],p[limb[1]],p[limb[2]]]  #获取三个关键点，中间项为顶点
+    angle = calculate_angle(use_points[0],use_points[1],use_points[2])
+    angle = str(int(angle))
+    cv2.putText(img,f"{text}:{angle}",position,fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=color)  #显示角度
+    # 显示图像
+# 打开默认摄像头
 def process_frame(img):
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
     #输入模型获取预测结果
@@ -164,9 +176,6 @@ while cap.isOpened():
     # define the center of circle
      
     p_pos=get_keypoints(list_p)
-    use_points = [p_pos[6],p_pos[8],p_pos[10]]
-    angle = calculate_angle(use_points[0],use_points[1],use_points[2])
-    angle = str(int(angle))
     # draw_point(p_pos)
     draw_head(frame,list_p)
     draw_body(frame,list_p)
@@ -174,7 +183,7 @@ while cap.isOpened():
     fps = 1/(cTime-pTime)
     pTime = cTime
     cv2.putText(frame,f"FPS:{int(fps)}",(30,50),cv2.FONT_HERSHEY_COMPLEX,1,(0,0,255),3)
-    cv2.putText(frame,f"RightArm:{angle}",(10,200),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=2,color=(255,0,0))  #显示角度
+    angle_show(list_p,(10,250),(0,0,255),"RightArm",r_arm,frame)
     cv2.imshow('my_window',frame)
     if cv2.waitKey(1) in [ord('q'),27]:
         break
