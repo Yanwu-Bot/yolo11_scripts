@@ -2,11 +2,12 @@ import ultralytics
 from ultralytics import YOLO
 import cv2
 import numpy as np
+from angle import *
 
 # 加载YOLOv11n-pose模型
 model = YOLO("./weights/yolo11n-pose.pt")
 #图片路径
-img_path = "D:\work\Python\YOLOV11\data\img03.jpg"
+img_path = "data\img02.png"
 #读取图片
 img = cv2.imread(img_path,cv2.IMREAD_COLOR)
 # 定义关键点索引与名称的对应关系
@@ -186,8 +187,13 @@ def sclae_img(img,percent):
 
 if __name__ == "__main__":
     list_p = process_frame(img_path)
+    p = get_keypoints(list_p) #获取关键点
+    use_points = [p[6],p[8],p[10]]  #获取三个关键点，中间项为顶点
     draw_select(img,list_p)
-    resized = sclae_img(img,50)
+    angle = calculate_angle(use_points[0],use_points[1],use_points[2])
+    angle = str(int(angle))
+    resized = sclae_img(img,80)
+    cv2.putText(resized,f"RightArm:{angle}",(10,40),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=2,color=(255,0,0))  #显示角度
     # 显示图像
     cv2.imshow("Image Window", resized)
     cv2.waitKey(0)

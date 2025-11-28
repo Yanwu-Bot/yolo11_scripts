@@ -3,6 +3,7 @@ from ultralytics import YOLO
 import cv2
 import time
 import numpy as np
+from angle import *
 
 cTime=0
 pTime=0
@@ -163,6 +164,9 @@ while cap.isOpened():
     # define the center of circle
      
     p_pos=get_keypoints(list_p)
+    use_points = [p_pos[6],p_pos[8],p_pos[10]]
+    angle = calculate_angle(use_points[0],use_points[1],use_points[2])
+    angle = str(int(angle))
     # draw_point(p_pos)
     draw_head(frame,list_p)
     draw_body(frame,list_p)
@@ -170,6 +174,7 @@ while cap.isOpened():
     fps = 1/(cTime-pTime)
     pTime = cTime
     cv2.putText(frame,f"FPS:{int(fps)}",(30,50),cv2.FONT_HERSHEY_COMPLEX,1,(0,0,255),3)
+    cv2.putText(frame,f"RightArm:{angle}",(10,200),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=2,color=(255,0,0))  #显示角度
     cv2.imshow('my_window',frame)
     if cv2.waitKey(1) in [ord('q'),27]:
         break
