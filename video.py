@@ -146,6 +146,7 @@ def change_detector(a,b):
 i = 0
 def process_frame(img):
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
+
     #输入模型获取预测结果
     results = model(img_RGB)
     global i
@@ -164,12 +165,17 @@ def process_frame(img):
             
             # 获取关键点位置
             p_pos = get_keypoints(list_p)
+            p13 = p_pos[13]
+            p14 = p_pos[14]
             p15 = p_pos[15]
             p16 = p_pos[16]
-            
+            angle1,angle2 = get_start_angle(img,p13,p14,p15,p16)
+            #cv2.putText(img,f"RIGHT_START:{str(int(angle1))}",(10,120),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
+            #scv2.putText(img,f"LEFT_START:{str(int(angle2))}",(10,140),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
             # 检测变化并计数
             if change_detector(p15, p16):
                 i += 1
+            show_start(img,angle1,angle2)
     cv2.putText(img, str(i), (10,100), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
@@ -207,6 +213,25 @@ def create_swap_detector():
 
     return detector
 
+#显示蹬起角度,不一定好用
+def get_start_angle(img,p13,p14,p15,p16):
+    img_x = img.shape[0]
+    img_y = img.shape[1]
+    y1 = p15[1]
+    y2 = p16[1]
+    y1 = int(y1)
+    y2 = int(y2)
+    angle1 = 180 - calculate_angle(p14, p16, (img_x,y2)) #右
+    angle2 = 180 - calculate_angle(p13, p15, (img_x,y1)) #左
+    return angle1,angle2
+    
+def show_start(img,angle1,angle2):
+    a = step[-1]
+    #左脚先迈出
+    if a == 1: 
+       cv2.putText(img,f"LEFT_START:{str(int(angle2))}",(10,140),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255)) 
+    elif a == 0 or a ==2:
+        cv2.putText(img,f"RIGHT_START:{str(int(angle1))}",(10,120),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
 
 def generate_video(input_path):
     filehead = input_path.split('/')[-1]
@@ -243,7 +268,7 @@ def generate_video(input_path):
   
                 
             except:
-                print('Finish')
+                print('error')
                 pass
                 
             if success == True:
