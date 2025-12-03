@@ -20,6 +20,7 @@ cTime=0
 pTime=0
 model = YOLO("./weights/yolo11l-pose.pt")
 
+#画出头部
 def draw_head(frame,list_p):
     p_pos = get_keypoints(list_p)
     #鼻子
@@ -38,6 +39,8 @@ def draw_head(frame,list_p):
     cv2.line(frame,p0,p1,(255,0,0),2)
     cv2.line(frame,p1,p3,(255,0,0),2)
 
+
+#画出身体
 def draw_body(frame,list_p):
     p_pos = get_keypoints(list_p)
     #左肩
@@ -62,7 +65,8 @@ def draw_body(frame,list_p):
     cv2.line(frame,p5,p7,(103,216,44),2)
     cv2.line(frame,p7,p9,(103,216,44),2)
     cv2.line(frame,p0,p_m,(0,0,255),3)
-   
+
+#画出腿部
 def draw_leg(frame,list_p):
     p_pos = get_keypoints(list_p)
     #左肩
@@ -91,6 +95,7 @@ def draw_leg(frame,list_p):
     cv2.line(frame,p11,p12,(255,0,220),2)
     cv2.line(frame,p_u,p_d,(255,0,116),2)
 
+#画出关键点
 def draw_point(p_pos,frame):
     for p in p_pos:  
         circle_center = p
@@ -99,6 +104,7 @@ def draw_point(p_pos,frame):
         #  Draw a circle using the circle() Function
         cv2.circle(frame, circle_center, radius, (0, 150, 255), thickness=-1, lineType=cv2.LINE_AA) 
 
+#选择要显示内容
 def draw_select(frame,list_p,d_h=True,d_b=True,d_l=True,pre=False,d_p=True):  #传入图像，关键点列表，显示头，显示身体，显示腿，显示关键点，预测
     if d_h:
         draw_head(frame,list_p)
@@ -112,6 +118,7 @@ def draw_select(frame,list_p,d_h=True,d_b=True,d_l=True,pre=False,d_p=True):  #�
     if pre:
         predict(source=frame)
 
+#预测框
 def predict():
     model = YOLO("./weights/yolo11s.pt")
     results = model.predict(
@@ -119,6 +126,7 @@ def predict():
                             conf=0.5 #置信度阈值
                             )
 
+#角度显示
 def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜色，显示内容，显示肢体，投射图像
     p = get_keypoints(list_p)
     use_points = [p[limb[0]],p[limb[1]],p[limb[2]]]  #获取三个关键点，中间项为顶点
@@ -127,6 +135,7 @@ def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜�
     cv2.putText(img,f"{text}:{angle}",position,fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=color)  #显示角度
     # 显示图像
 
+#获取关键点坐标
 def get_P_X_Y(img,marks):
     img_Heigt = img.shape[0]
     img_Width = img.shape[1]
@@ -135,6 +144,7 @@ def get_P_X_Y(img,marks):
         y_pos = int(pose.y*img_Heigt)
         print(f"point:{point},x_pos:{x_pos},y_pos:{y_pos}")
 
+#检测腿部交替变化
 def change_detector(a,b):
     if a>b and step[-1] != 1:
         step.append(1)
@@ -144,6 +154,7 @@ def change_detector(a,b):
         return True
 
 i = 0
+#帧处理函数，对每帧画面进行处理
 def process_frame(img):
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
 
@@ -183,6 +194,7 @@ def process_frame(img):
     # 循环结束后再返回
     return img, list_p  # 注意：这里返回的是最后一个list_p
 
+#获取关键点
 def get_keypoints(list_p):
     p_pos=[]
     for p in list_p[0]:
@@ -210,7 +222,6 @@ def create_swap_detector():
             previous_state = current_state
             return True
         return False
-
     return detector
 
 #显示蹬起角度,不一定好用
@@ -224,7 +235,8 @@ def get_start_angle(img,p13,p14,p15,p16):
     angle1 = 180 - calculate_angle(p14, p16, (img_x,y2)) #右
     angle2 = 180 - calculate_angle(p13, p15, (img_x,y1)) #左
     return angle1,angle2
-    
+
+#显示起蹬角度 
 def show_start(img,angle1,angle2):
     a = step[-1]
     #左脚先迈出
@@ -233,6 +245,7 @@ def show_start(img,angle1,angle2):
     elif a == 0 or a ==2:
         cv2.putText(img,f"RIGHT_START:{str(int(angle1))}",(10,120),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
 
+#生成视频函数
 def generate_video(input_path):
     filehead = input_path.split('/')[-1]
     output_path = 'out-'+filehead
@@ -252,10 +265,8 @@ def generate_video(input_path):
     frame_size = (cap.get(cv2.CAP_PROP_FRAME_WIDTH),cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     fps = cap.get(cv2.CAP_PROP_FPS)
-
     out = cv2.VideoWriter(output_path,fourcc,fps,(int(frame_size[0]),int(frame_size[1])))
 
-  
     try:
         while(cap.isOpened()):
             success,frame = cap.read()
@@ -265,7 +276,6 @@ def generate_video(input_path):
             try:
                 frame,list_p = process_frame(frame)
                 draw_select(frame,list_p)
-  
                 
             except:
                 print('error')
@@ -273,7 +283,6 @@ def generate_video(input_path):
                 
             if success == True:
                 out.write(frame)
-
     except:
         print('中断')
         pass
@@ -281,7 +290,7 @@ def generate_video(input_path):
     out.release()
     cap.release()
     print('Video saved',output_path)
-
+#输入视频路径
 input_path = 'data/run_woman.mp4'
 generate_video(input_path)
 print(step)
