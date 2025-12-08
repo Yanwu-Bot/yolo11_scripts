@@ -3,6 +3,7 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 from angle import *
+from utill import *
 
 # 加载YOLOv11n-pose模型
 model = YOLO("./weights/yolo11n-pose.pt")
@@ -43,17 +44,7 @@ l_leg = [11,13,15]
     p16=p_pos[16]#右脚
 '''
 #输出对应点坐标
-def get_keypoints(list_p):
-    p_pos=[]
-    for p in list_p[0]:
-        x = p[0]
-        x = int(x)
-        y = p[1]
-        y = int(y) 
-        pos = (x,y)
-        p_pos.append(pos)
-    return p_pos
-   
+
 def draw_head(frame,list_p):
     p_pos = get_keypoints(list_p)
     #鼻子
