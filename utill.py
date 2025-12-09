@@ -7,11 +7,13 @@ from angle import *
 import cv2
 import numpy as np
 from collections import deque
+import time
 hist_ra= deque(maxlen=50)  # 右臂
 hist_la = deque(maxlen=50) # 左臂
 hist_rl= deque(maxlen=50)  # 右腿
 hist_ll = deque(maxlen=50) # 左腿
 
+#实时绘制图像
 def draw_direct_plot(img,hist,value, pos=(400, 50), label="Knee"):  #250,120
     """
     直接在传入的img上绘图，无返回值
@@ -83,7 +85,6 @@ def draw_head(frame,list_p):
     cv2.line(frame,p2,p0,(255,0,0),2)
     cv2.line(frame,p0,p1,(255,0,0),2)
     cv2.line(frame,p1,p3,(255,0,0),2)
-
 
 #画出身体
 def draw_body(frame,list_p):
@@ -231,3 +232,10 @@ def create_swap_detector():
         return False
     return detector
 
+#打分系统
+def get_score(step_fre,Wf):
+    if step_fre > 1.5 and step_fre < 2:
+        score_F = 2
+    elif step_fre < 1.5 or step_fre > 2:
+        score_F = 1
+    return score_F*Wf

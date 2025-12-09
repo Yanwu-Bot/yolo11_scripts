@@ -11,13 +11,16 @@ from angle import *
 from utill import *
 from collections import deque
 
+time_current = []
 data_buffer = deque(maxlen=50)
 step=[0]
 r_arm = [6,8,10]
 l_arm = [5,7,9]
 r_leg = [12,14,16]
 l_leg = [11,13,15]
-
+i = 0
+score = 0
+step_fres = 0
 cTime=0
 pTime=0
 model = YOLO("./weights/yolo11l-pose.pt")
@@ -31,7 +34,6 @@ def change_detector(a,b):
         step.append(2)
         return True
 
-i = 0
 #帧处理函数，对每帧画面进行处理
 def process_frame(img):
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
@@ -39,6 +41,8 @@ def process_frame(img):
     #输入模型获取预测结果
     results = model(img_RGB)
     global i
+    global step_fres
+    global score
     for result in results:
         keypoints = result.keypoints
         
@@ -64,18 +68,26 @@ def process_frame(img):
             angle1,angle2 = get_start_angle(img,p13,p14,p15,p16)
             #cv2.putText(img,f"RIGHT_START:{str(int(angle1))}",(10,120),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
             #scv2.putText(img,f"LEFT_START:{str(int(angle2))}",(10,140),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
-            # 检测变化并计数
+            # 检测变化并计数计算实时步频
             if change_detector(p15, p16):
                 i += 1
-            show_start(img,angle1,angle2)     
+                time_current.append(time.time())
+                step_fres = 1/(time_current[-1]-time_current[-2])
+                step_fres = round(step_fres,2)
+            show_start(img,angle1,angle2)  
+            cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                fontScale=0.6, thickness=2, color=(255,0,255))
+            score = get_score(step_fres,0.8)
+            cv2.putText(img, str(score), (10,200), 
+                                        fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                                        fontScale=0.6, thickness=2, color=(0,200,0))  
     cv2.putText(img, str(i), (10,100), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
-    
+
     # 循环结束后再返回
     return img, list_p  # 注意：这里返回的是最后一个list_p
-
-
 
 #显示蹬起角度,不一定好用
 def get_start_angle(img,p13,p14,p15,p16):
@@ -148,14 +160,3 @@ input_path = 'data/run_woman.mp4'
 generate_video(input_path)
 print(step)
 
-def get_keypoints(list_p):
-    p_pos=[]
-    for p in list_p[0]:
-        x = p[0]
-        x = int(x)
-        y = p[1]
-        y = int(y) 
-        pos = (x,y)
-        p_pos.append(pos)
-    return p_pos
-   
