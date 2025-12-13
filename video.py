@@ -13,6 +13,7 @@ from collections import deque
 
 time_current = []
 data_buffer = deque(maxlen=50)
+weight = [1,1,1,0,0,0]
 step=[0]
 r_arm = [6,8,10]
 l_arm = [5,7,9]
@@ -48,8 +49,7 @@ def process_frame(img):
         
         for p in keypoints:
             list_p = p.data.tolist()
-            print(list_p)
-            
+            # print(list_p)
             # 显示角度
             angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
             angle_la = angle_show(list_p, (10,40), (0,0,255), "LeftArm", l_arm, img)
@@ -61,6 +61,11 @@ def process_frame(img):
             draw_direct_plot(img,hist_ll ,int(angle_ll), pos=(img.shape[1]-560, 300), label="angle_ll")
             # 获取关键点位置
             p_pos = get_keypoints(list_p)
+            # ratios, abnormal_flags = limb_calculation(p_pos)
+            # w_point = wrong_point(abnormal_flags,weight)
+            # cv2.putText(img, f'wrong_point:{str(w_point)}', (10,250), 
+            #     fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            #     fontScale=0.6, thickness=2, color=(255,255,255))
             p13 = p_pos[13]
             p14 = p_pos[14]
             p15 = p_pos[15]
@@ -156,7 +161,7 @@ def generate_video(input_path):
     cap.release()
     print('Video saved',output_path)
 #输入视频路径
-input_path = 'data/run_woman.mp4'
+input_path = 'data/run_woman1.mp4'
 generate_video(input_path)
 print(step)
 

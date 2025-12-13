@@ -7,6 +7,7 @@ from angle import *
 import cv2
 import numpy as np
 from collections import deque
+from math import sqrt, acos, degrees
 import time
 hist_ra= deque(maxlen=50)  # 右臂
 hist_la = deque(maxlen=50) # 左臂
@@ -239,3 +240,111 @@ def get_score(step_fre,Wf):
     elif step_fre < 1.5 or step_fre > 2:
         score_F = 1
     return score_F*Wf
+
+def distance(p1_idx, p2_idx,p_pos):
+    """计算两点之间的欧氏距离"""
+    x1, y1 = p_pos[p1_idx][0], p_pos[p1_idx][1]
+    x2, y2 = p_pos[p2_idx][0], p_pos[p2_idx][1]
+    return sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+def limb_calculation(p_pos):
+    # 计算各肢体长度
+    upper_arm_l = distance(6, 8, p_pos)    # 左上臂 (肩-肘)
+    lower_arm_l = distance(8, 10, p_pos)   # 左下臂 (肘-腕)
+    upper_arm_r = distance(5, 7, p_pos)    # 右上臂 (注意：5是右肩，7是右肘)
+    lower_arm_r = distance(7, 9, p_pos)    # 右下臂
+    
+    upper_leg_l = distance(12, 14, p_pos)  # 左大腿 (髋-膝)
+    lower_leg_l = distance(14, 16, p_pos)  # 左小腿 (膝-踝)
+    upper_leg_r = distance(11, 13, p_pos)  # 右大腿
+    lower_leg_r = distance(13, 15, p_pos)  # 右小腿
+    
+    shoulder_w = distance(5, 6, p_pos)     # 肩宽 (左右肩之间)
+    hip_w = distance(11, 12, p_pos)        # 髋宽 (左右髋之间)
+    
+    # 计算总长度
+    left_arm_total = upper_arm_l + lower_arm_l
+    right_arm_total = upper_arm_r + lower_arm_r
+    left_leg_total = upper_leg_l + lower_leg_l
+    right_leg_total = upper_leg_r + lower_leg_r
+    
+    # 计算比例（注意正确的括号）
+    ratios = {
+        # 腿臂比：腿长/臂长 (正常范围：1.0-1.3)
+        "left_leg_arm": left_leg_total / left_arm_total,
+        "right_leg_arm": right_leg_total / right_arm_total,
+        
+        # 小腿大腿比 (正常范围：0.8-1.0)
+        "left_ul_leg": lower_leg_l / upper_leg_l,
+        "right_ul_leg": lower_leg_r / upper_leg_r,
+        
+        # 前臂上臂比 (正常范围：0.8-1.0)
+        "left_ul_arm": lower_arm_l / upper_arm_l,
+        "right_ul_arm": lower_arm_r / upper_arm_r,
+        
+        # 肩宽与腿长比
+        "left_shoulder_leg": shoulder_w / left_leg_total,
+        "right_shoulder_leg": shoulder_w / right_leg_total,
+        
+        # 肩髋比 (男性：1.2-1.4，女性：0.9-1.1)
+        "s_h": shoulder_w / hip_w,
+        
+        # 左右对称性 (应接近1.0)
+        'arm_symmetry': min(left_arm_total, right_arm_total) / 
+                        max(left_arm_total, right_arm_total),
+        'leg_symmetry': min(left_leg_total, right_leg_total) / 
+                        max(left_leg_total, right_leg_total),
+        
+        # 额外有用的比例
+        'total_leg_to_height': (left_leg_total + right_leg_total) / 2,  # 需要身高数据归一化
+        'total_arm_to_height': (left_arm_total + right_arm_total) / 2,
+    }
+    
+    # 异常检测标志
+    abnormal_flags = {
+        # 腿臂比异常：腿应该比手臂长，所以<0.9或>1.4都是异常
+        'leg_to_arm_abnormal': any([
+            ratios['left_leg_arm'] > 1.4 or ratios['left_leg_arm'] < 0.9,
+            ratios['right_leg_arm'] > 1.4 or ratios['right_leg_arm'] < 0.9
+        ]),
+        
+        # 小腿大腿比异常
+        'leg_abnormal': any([
+            ratios['left_ul_leg'] > 1.0 or ratios['left_ul_leg'] < 0.75,
+            ratios['right_ul_leg'] > 1.0 or ratios['right_ul_leg'] < 0.75
+        ]),
+        
+        # 前臂上臂比异常
+        'arm_abnormal': any([
+            ratios['left_ul_arm'] > 1.0 or ratios['left_ul_arm'] < 0.75,
+            ratios['right_ul_arm'] > 1.0 or ratios['right_ul_arm'] < 0.75
+        ]),
+        
+        # 对称性异常
+        'arm_symmetry_abnormal': ratios['arm_symmetry'] < 0.85,  # 宽松一点
+        'leg_symmetry_abnormal': ratios['leg_symmetry'] < 0.85,
+        
+        # 肩髋比异常（注意：需要知道性别）
+        's_h_abnormal': ratios['s_h'] < 0.9 or ratios['s_h'] > 1.5,  # 宽泛范围
+        
+        # 额外：左右腿臂比差异过大
+        'leg_arm_balance_abnormal': abs(ratios['left_leg_arm'] - ratios['right_leg_arm']) > 0.2,
+    }
+    
+    return ratios, abnormal_flags
+
+def wrong_point(abnormal_flag,weight):
+    point = 0 
+    if abnormal_flag['leg_to_arm_abnormal']:
+        point += weight[0]*1
+    if abnormal_flag['leg_abnormal']:
+        point += weight[1]*1
+    if abnormal_flag['arm_abnormal']:
+        point += weight[2]*1
+    if abnormal_flag['arm_symmetry_abnormal']:
+        point += weight[3]*1
+    if abnormal_flag['leg_symmetry_abnormal']:
+        point += weight[4]*1
+    if abnormal_flag['s_h_abnormal']:
+        point += weight[5]*1
+    return point
