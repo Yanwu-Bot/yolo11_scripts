@@ -17,7 +17,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用设备：{DEVICE}")
 
 DATASET_DIR = "video_dataset"
-MODEL_SAVE_PATH = os.path.join(DATASET_DIR, "running_anomaly_lstm_pytorch.pth")
+MODEL_SAVE_PATH = os.path.join("model", "running_anomaly_lstm_pytorch.pth")
 EPOCHS = 50
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001

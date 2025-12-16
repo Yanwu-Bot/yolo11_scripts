@@ -11,7 +11,7 @@ rcParams['font.family'] = 'SimHei'
 # 设备配置
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # 模型路径
-MODEL_PATH = "video_dataset\\running_anomaly_lstm_pytorch.pth"
+MODEL_PATH = "model\\running_anomaly_lstm_pytorch.pth"
 # 模型参数（必须和训练时完全一致）
 INPUT_DIM = 34       # 17关节×2坐标
 HIDDEN_DIM = 64      # LSTM隐藏层维度
@@ -311,7 +311,7 @@ if __name__ == "__main__":
     # infer_realtime_camera(lstm_model)
     
     # 场景2：本地视频推理（替换为你的视频路径）
-    infer_local_video(lstm_model, "video_origin\\run_man2.mp4", save_output=True)
+    infer_local_video(lstm_model, "video_origin\\run_woman2.mp4", save_output=True)
     
     # 场景3：单帧图片推理（替换为你的图片路径）
     # infer_single_image(lstm_model, "running_videos/test_frame.jpg")
