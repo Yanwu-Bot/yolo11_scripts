@@ -32,7 +32,7 @@ CONF_THRESHOLD = 0.5     # YOLO关键点置信度阈值
 # 预测阈值
 PRED_THRESHOLD = 0.4     # 概率>阈值判定为异常
 
-OUT_PATH = "video_result"
+OUT_PATH = "video_origin\\result_video"
 
 # ==============================================================================
 
@@ -40,7 +40,7 @@ OUT_PATH = "video_result"
 def load_trained_model(model_path):
     """直接加载训练好的STGCN模型"""
     if not os.path.exists(model_path):
-        print(f"❌ 模型文件不存在：{model_path}")
+        print(f"模型文件不存在：{model_path}")
         return None
     
     # 直接加载整个checkpoint
@@ -62,17 +62,17 @@ def load_trained_model(model_path):
         })
         
         # 打印模型配置
-        print(f"📊 模型配置：{model_config}")
+        print(f"模型配置：{model_config}")
         
         # 动态导入训练时使用的模型定义
         # 注意：这里假设你的训练代码在同一目录下
         try:
             # 方法1：直接导入训练代码中的模型类
             from ST_GCN import COCO_ST_GCN  # 需要改成你的训练文件名
-            print("✅ 从训练文件导入模型类")
+            print("从训练文件导入模型类")
         except ImportError:
             # 方法2：使用一个简化的模型定义（如果知道确切结构）
-            print("⚠️ 无法导入训练模型，使用简化模型定义")
+            print("无法导入训练模型，使用简化模型定义")
             
             # 这里需要定义和训练时完全一样的模型结构
             # 这部分应该从你的训练代码中复制过来
@@ -213,7 +213,7 @@ def load_trained_model(model_path):
         epoch = checkpoint.get('epoch', '未知')
         val_acc = checkpoint.get('val_acc', '未知')
         
-        print(f"✅ 模型加载成功！")
+        print(f"  模型加载成功！")
         print(f"   训练轮次: {epoch}")
         print(f"   验证准确率: {val_acc}%")
         
@@ -233,9 +233,9 @@ def load_trained_model(model_path):
                 hop_size=2
             ).to(DEVICE)
             model.load_state_dict(checkpoint)
-            print("✅ 直接加载模型权重成功")
+            print("直接加载模型权重成功")
         except:
-            print("❌ 无法加载模型，请检查模型结构是否匹配")
+            print("无法加载模型，请检查模型结构是否匹配")
             return None
     
     # 设置为评估模式
@@ -248,9 +248,9 @@ def load_trained_model(model_path):
 # 初始化YOLO姿态模型
 try:
     yolo_pose = YOLO("weights/yolo11l-pose.pt")  # 根据你的路径调整
-    print("✅ YOLO姿态模型加载成功")
+    print("YOLO姿态模型加载成功")
 except:
-    print("⚠️ 无法加载YOLO模型，请检查路径")
+    print(" 无法加载YOLO模型，请检查路径")
     yolo_pose = None
 
 def extract_pose_from_frame(frame, normalize=True):
@@ -258,7 +258,7 @@ def extract_pose_from_frame(frame, normalize=True):
     从单帧提取姿态关键点
     """
     if yolo_pose is None:
-        print("❌ YOLO模型未加载")
+        print("YOLO模型未加载")
         return np.zeros(34)
     
     h, w = frame.shape[:2]
@@ -352,17 +352,17 @@ def infer_video_simple(model_path, video_path, save_output=False):
     # 加载模型
     model = load_trained_model(model_path)
     if model is None:
-        print("❌ 模型加载失败，程序退出")
+        print(" 模型加载失败，程序退出")
         return
     
     # 检查视频文件
     if not os.path.exists(video_path):
-        print(f"❌ 视频文件不存在：{video_path}")
+        print(f" 视频文件不存在：{video_path}")
         return
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"❌ 无法打开视频：{video_path}")
+        print(f" 无法打开视频：{video_path}")
         return
     
     # 获取视频参数
@@ -371,19 +371,21 @@ def infer_video_simple(model_path, video_path, save_output=False):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    print(f"📊 视频信息:")
+    print(f" 视频信息:")
     print(f"  尺寸: {width}x{height}, FPS: {fps}, 总帧数: {total_frames}")
     
     # 保存输出
     if save_output:
-        output_path = os.path.splitext(video_path)[0] + "_stgcn.mp4"
+        video_name = os.path.basename(video_path).split('.')[0]
+        output_path= os.path.join(OUT_PATH, f"{video_name}.mp4")
+        #output_path = OUT_PATH + "_stgcn.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     # 初始化缓冲区
     pose_buffer = PoseWindowBuffer(WINDOW_SIZE)
     
-    print(f"\n🚀 开始推理... (按ESC键退出)")
+    print(f"\n开始推理... (按ESC键退出)")
     
     frame_count = 0
     abnormal_count = 0
@@ -439,12 +441,12 @@ def infer_video_simple(model_path, video_path, save_output=False):
     cap.release()
     if save_output:
         out_writer.release()
-        print(f"✅ 结果保存到: {output_path}")
+        print(f"✅结果保存到: {output_path}")
     
     cv2.destroyAllWindows()
     
     # 统计
-    print(f"\n📊 推理统计:")
+    print(f"\n 推理统计:")
     print(f"总帧数: {frame_count}")
     print(f"异常帧数: {abnormal_count}")
     if frame_count > 0:

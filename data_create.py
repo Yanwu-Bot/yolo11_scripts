@@ -14,8 +14,8 @@ VIDEO_DIR = "video_origin\data_video"
 LABEL_SAVE_DIR = "video_labels"  
 SAVE_DIR = "video_dataset"     
 SAMPLE_FPS = 10                       
-WINDOW_SIZE = 4                      
-STEP = 2                             
+WINDOW_SIZE = 10                      
+STEP = 4                             
 # COCO 17个关键点的标准索引+名称（精准对应）
 COCO_KEYPOINTS = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -151,6 +151,8 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
     print("      标注操作说明：      ")
     print("   按 0 键 → 标注为正常")
     print("   按 1 键 → 标注为异常")
+    print("   按 Q 键 → 上一帧标注为正常")
+    print("   按 P 键 → 上一帧标注为异常")
     print("   按 ESC 键 → 跳过剩余帧（默认标0）")
     print("   按 空格键 → 暂停/继续标注（可选）")
     print("==============================================")
@@ -207,6 +209,14 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
                 labels.append(1)
                 print(f"帧{i+1}/{total_frames} → 标注为异常(1)")
                 break
+            elif key == 81:
+                labels[-1] == 0
+                print(f"帧{i}/{total_frames} → 标注为正常(0)")
+                continue
+            elif key == 80:
+                labels[-1] == 1
+                print(f"帧{i}/{total_frames} → 标注为异常(1)")
+                continue
             elif key == 27:  # ESC键
                 print(" ESC跳过，剩余帧标为0")
                 labels.extend([0] * (total_frames - len(labels)))
