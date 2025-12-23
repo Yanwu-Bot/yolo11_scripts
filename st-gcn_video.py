@@ -30,7 +30,9 @@ WINDOW_SIZE = 12         # 时间窗口大小（必须与训练时一致）
 CONF_THRESHOLD = 0.5     # YOLO关键点置信度阈值
 
 # 预测阈值
-PRED_THRESHOLD = 0.5     # 概率>阈值判定为异常
+PRED_THRESHOLD = 0.4     # 概率>阈值判定为异常
+
+OUT_PATH = "video_result"
 
 # ==============================================================================
 
@@ -245,7 +247,7 @@ def load_trained_model(model_path):
 # -------------------------- 2. 关键点提取工具 --------------------------
 # 初始化YOLO姿态模型
 try:
-    yolo_pose = YOLO("weights/yolo11m-pose.pt")  # 根据你的路径调整
+    yolo_pose = YOLO("weights/yolo11l-pose.pt")  # 根据你的路径调整
     print("✅ YOLO姿态模型加载成功")
 except:
     print("⚠️ 无法加载YOLO模型，请检查路径")
@@ -374,7 +376,7 @@ def infer_video_simple(model_path, video_path, save_output=False):
     
     # 保存输出
     if save_output:
-        output_path = os.path.splitext(video_path)[0] + "_result.mp4"
+        output_path = os.path.splitext(video_path)[0] + "_stgcn.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
@@ -430,7 +432,7 @@ def infer_video_simple(model_path, video_path, save_output=False):
         
         # ESC退出
         if cv2.waitKey(1) & 0xFF == 27:
-            print("⚠️ 用户提前退出")
+            print("用户提前退出")
             break
     
     # 清理
@@ -452,7 +454,7 @@ def infer_video_simple(model_path, video_path, save_output=False):
 if __name__ == "__main__":
     # 使用示例
     model_path = "model/best_model.pth"
-    video_path = "video_origin//run_woman2.mp4"  # 你的视频路径
+    video_path = "video_origin\data_video\\run_woman.mp4"  # 你的视频路径
     
     # 直接调用简化版本
     infer_video_simple(

@@ -14,8 +14,8 @@ VIDEO_DIR = "video_origin\data_video"
 LABEL_SAVE_DIR = "video_labels"  
 SAVE_DIR = "video_dataset"     
 SAMPLE_FPS = 10                       
-WINDOW_SIZE = 4                      
-STEP = 2                             
+WINDOW_SIZE = 6                      
+STEP = 2                              
 # COCO 17个关键点的标准索引+名称（精准对应）
 COCO_KEYPOINTS = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -306,10 +306,8 @@ def sliding_window_split(pose_seq, labels=None):
     for i in range(0, len(pose_seq) - WINDOW_SIZE + 1, STEP):
         window = pose_seq[i:i+WINDOW_SIZE]
         X.append(window)
-        if np.any(labels[i:i+WINDOW_SIZE] == 1):  # 假设1是异常
-            y.append(1)
-        else:
-            y.append(0)
+        if labels is not None:
+            y.append(labels[i+WINDOW_SIZE-1])
     X = np.array(X)
     y = np.array(y) if labels is not None else None
     return X, y
@@ -327,7 +325,7 @@ def main():
     video_ext = ('.mp4', '.avi', '.mov', '.mkv')
     video_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith(video_ext)]
     if not video_files:
-        print("未找到视频文件！")
+        print("❌ 未找到视频文件！")
         return
     
     all_X, all_y = [], []
@@ -342,7 +340,7 @@ def main():
         video_sample_counts.append(len(X_video))
     
     if not all_X:
-        print("无有效数据！")
+        print("❌ 无有效数据！")
         return
     
     # 合并+划分数据集
@@ -364,8 +362,8 @@ def main():
     
     # 打印信息
     print_dataset_info(X_train, y_train, X_test, y_test)
-    print(f" 数据集保存至：{SAVE_DIR}")
-    print(f" 关键点已精准校准，标注标签保存至：{LABEL_SAVE_DIR}")
+    print(f"\n✅ 数据集保存至：{SAVE_DIR}")
+    print(f"📌 关键点已精准校准，标注标签保存至：{LABEL_SAVE_DIR}")
 
 def load_dataset():
     """加载数据集"""
@@ -383,5 +381,5 @@ if __name__ == "__main__":
     main()
     # 验证加载
     X_train, y_train, X_test, y_test = load_dataset()
-    print(f"\n数据集加载验证：")
+    print(f"\n🔍 数据集加载验证：")
     print(f"训练集形状：{X_train.shape} | 标签形状：{y_train.shape}")

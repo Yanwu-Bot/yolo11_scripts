@@ -311,7 +311,7 @@ if __name__ == "__main__":
     # infer_realtime_camera(lstm_model)
     
     # 场景2：本地视频推理（替换为你的视频路径）
-    infer_local_video(lstm_model, "video_origin\\run_woman2.mp4", save_output=True)
+    infer_local_video(lstm_model, "video_origin\data_video\\run_woman.mp4", save_output=True)
     
     # 场景3：单帧图片推理（替换为你的图片路径）
     # infer_single_image(lstm_model, "running_videos/test_frame.jpg")

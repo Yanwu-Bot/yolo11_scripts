@@ -160,10 +160,10 @@ class STGC_block(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Conv2d(out_channels,
-                     out_channels,
-                     (t_kernel_size, 1),
-                     (stride, 1),
-                     ((t_kernel_size - 1) // 2, 0)),
+                    out_channels,
+                    (t_kernel_size, 1),
+                    (stride, 1),
+                    ((t_kernel_size - 1) // 2, 0)),
             nn.BatchNorm2d(out_channels),
             nn.ReLU())
     
@@ -245,11 +245,11 @@ def load_best_model(model, optimizer=None, filename='best_model.pth'):
         model.load_state_dict(checkpoint['model_state_dict'])
         if optimizer is not None:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        print(f"✅ 从 {checkpoint_path} 加载最佳模型")
+        print(f" 从 {checkpoint_path} 加载最佳模型")
         print(f"   轮次: {checkpoint['epoch']}, 验证准确率: {checkpoint['val_acc']:.2f}%")
         return model, optimizer, checkpoint['epoch'], checkpoint['val_acc']
     else:
-        print(f"⚠️ 最佳模型文件不存在: {checkpoint_path}")
+        print(f" 最佳模型文件不存在: {checkpoint_path}")
         return model, optimizer, 0, 0.0
 # ==============================================
 
@@ -332,12 +332,12 @@ def train_model(model, train_loader, test_loader, epochs=50, lr=0.001):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_epoch = epoch + 1
-            print(f"🌟 发现新的最佳模型! (准确率: {val_acc:.2f}%)")
+            print(f" 发现新的最佳模型! (准确率: {val_acc:.2f}%)")
             save_best_model(model, optimizer, epoch+1, val_acc)
         
         print('-' * 50)
     
-    print(f"\n🏆 训练完成!")
+    print(f"\n 训练完成!")
     print(f"最佳模型在第 {best_epoch} 轮，验证准确率: {best_val_acc:.2f}%")
     
     return train_losses, val_losses, train_accs, val_accs
@@ -393,7 +393,7 @@ if __name__ == "__main__":
     print("="*50)
     
     train_losses, val_losses, train_accs, val_accs = train_model(
-        model, train_loader, test_loader, epochs=50, lr=0.01
+        model, train_loader, test_loader, epochs=100, lr=0.001
     )
     
     # 绘制训练曲线
