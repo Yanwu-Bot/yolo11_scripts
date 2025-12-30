@@ -62,11 +62,11 @@ def draw_direct_plot(img,hist,value, pos=(400, 50), label="Knee"):  #250,120
     
     # 显示文字
     cv2.putText(img, f"{label}:{value}", 
-               (x+10, y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            (x+10, y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
     cv2.putText(img, f"Min:{minv}", (x+w-70, y+20), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
     cv2.putText(img, f"Max:{maxv}", (x+w-70, y+40), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
 
 #画出头部
 def draw_head(frame,list_p):
@@ -348,3 +348,16 @@ def wrong_point(abnormal_flag,weight):
     if abnormal_flag['s_h_abnormal']:
         point += weight[5]*1
     return point
+
+# cv2.line(image,(100,200),(250,250),(255,0,0),2)#画线，起点，终点，颜色，粗细
+# cv2.circle(image,(50,100),20,(0,0,255),2)#画圈，圆心，半径，颜色，粗细
+def video_out(input_path,output_dir:str,pre:str):
+    filehead = input_path.split('/')[-1]
+    output_path = pre+filehead
+    output_path = output_dir+output_path
+    cap = cv2.VideoCapture(input_path)
+    frame_size = (cap.get(cv2.CAP_PROP_FRAME_WIDTH),cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    out = cv2.VideoWriter(output_path,fourcc,fps,(int(frame_size[0]),int(frame_size[1])))
+    return out,output_path,cap

@@ -1,5 +1,6 @@
 #mpose 效果最好，n以上帧数会下降
 
+from run_test import *
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
@@ -10,6 +11,7 @@ import numpy as np
 from angle import *
 from utill import *
 from collections import deque
+from time_utils import show_time
 
 time_current = []
 data_buffer = deque(maxlen=50)
@@ -22,8 +24,13 @@ l_leg = [11,13,15]
 i = 0
 score = 0
 step_fres = 0
-cTime=0
-pTime=0
+frame_count = 0
+gap = 0
+#24帧每秒
+VIDEO_FRAME_SPEED = 24
+TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
+current_frame = 1 
+
 model = YOLO("./weights/yolo11l-pose.pt")
 
 #检测腿部交替变化
@@ -37,16 +44,19 @@ def change_detector(a,b):
 
 #帧处理函数，对每帧画面进行处理
 def process_frame(img):
+    # start_time = time.time()
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
-
     #输入模型获取预测结果
     results = model(img_RGB)
+    #预测单帧状态
+    process_single_image(img)
+    global current_frame
     global i
     global step_fres
     global score
+    global gap
     for result in results:
         keypoints = result.keypoints
-        
         for p in keypoints:
             list_p = p.data.tolist()
             # print(list_p)
@@ -76,9 +86,11 @@ def process_frame(img):
             # 检测变化并计数计算实时步频
             if change_detector(p15, p16):
                 i += 1
-                time_current.append(time.time())
-                step_fres = 1/(time_current[-1]-time_current[-2])
-                step_fres = round(step_fres,2)
+                time_current.append(current_frame)
+                if i > 2 :
+                    gap = ((time_current[-1]-time_current[-2]) * TIME_GAP)
+                    if gap > 0.1:
+                        step_fres = round(1/gap,3)
             show_start(img,angle1,angle2)  
             cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
@@ -90,7 +102,9 @@ def process_frame(img):
     cv2.putText(img, str(i), (10,100), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
-
+    # current_time = time.time() 
+    # print(show_time(start_time,current_time))
+    current_frame += 1
     # 循环结束后再返回
     return img, list_p  # 注意：这里返回的是最后一个list_p
 
@@ -111,18 +125,15 @@ def show_start(img,angle1,angle2):
     a = step[-1]
     #左脚先迈出
     if a == 1: 
-       cv2.putText(img,f"LEFT_START:{str(int(angle2))}",(10,140),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255)) 
+        cv2.putText(img,f"LEFT_START:{str(int(angle2))}",(10,140),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255)) 
     elif a == 0 or a ==2:
         cv2.putText(img,f"RIGHT_START:{str(int(angle1))}",(10,120),fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=(255,255,255))
 
 #生成视频函数
 def generate_video(input_path):
-    filehead = input_path.split('/')[-1]
-    output_path = 'out-'+filehead
-    output_path = './video/'+output_path
     print('视频开始处理',input_path)
     cap = cv2.VideoCapture(input_path)
-    frame_count = 0
+    global frame_count 
     while(cap.isOpened()):
         success,frame = cap.read()
         frame_count += 1
@@ -130,13 +141,8 @@ def generate_video(input_path):
             break
     cap.release()
     print('视频总帧数：',frame_count)
-
-    cap = cv2.VideoCapture(input_path)
-    frame_size = (cap.get(cv2.CAP_PROP_FRAME_WIDTH),cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    out = cv2.VideoWriter(output_path,fourcc,fps,(int(frame_size[0]),int(frame_size[1])))
-
+    #生成视频
+    out,output_path,cap = video_out(input_path,'video_origin/result_video/','out-') 
     try:
         while(cap.isOpened()):
             success,frame = cap.read()
@@ -161,7 +167,6 @@ def generate_video(input_path):
     cap.release()
     print('Video saved',output_path)
 #输入视频路径
-input_path = 'data/run_woman1.mp4'
+input_path = 'video_origin/data_video/run_woman.mp4'
 generate_video(input_path)
 print(step)
-

@@ -90,6 +90,7 @@ train_losses = []
 train_accuracies = []
 test_losses = []
 test_accuracies = []
+best_accuracy = 0
 
 print("\n开始训练...")
 for epoch in range(epochs):
@@ -142,6 +143,17 @@ for epoch in range(epochs):
     
     # 更新学习率
     scheduler.step()
+    if test_acc > best_accuracy:
+        best_accuracy = test_acc
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_losses,
+            'train_accuracies': train_accuracies,
+            'test_losses': test_losses,
+            'test_accuracies': test_accuracies,
+        }, save_path)
+        print(f"当前{epoch+1}轮模型最佳")
     
     print(f'Epoch [{epoch+1}/{epochs}] - '
         f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | '
@@ -173,16 +185,9 @@ plt.savefig('training_results.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 # ==================== 8. 保存模型 ====================
-torch.save({
-    'model_state_dict': model.state_dict(),
-    'optimizer_state_dict': optimizer.state_dict(),
-    'train_losses': train_losses,
-    'train_accuracies': train_accuracies,
-    'test_losses': test_losses,
-    'test_accuracies': test_accuracies,
-}, save_path)
 
-print(f"\n模型已保存为: resnet18_run_posture.pth")
+
+print(f"\n最佳模型已保存为: resnet18_run_posture.pth")
 print(f"训练结果图已保存为: training_results.png")
 
 # ==================== 9. 最终评估 ====================

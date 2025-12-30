@@ -6,12 +6,15 @@ from torchvision import models
 from ultralytics import YOLO
 
 # ==================== 关键点提取函数 ====================
-def extract_keypoints_from_image(image_path, yolo_model_path="weights/yolo11l-pose.pt", conf_threshold=0.5):
+def extract_keypoints_from_image(image_path, yolo_model_path="weights/yolo11l-pose.pt", conf_threshold=0.5,read=True):
     """
     从单张图片中提取人体关键点
     """
     pose_model = YOLO(yolo_model_path)
-    img = cv2.imread(image_path)
+    if read == True:
+        img = image_path
+    else:
+        img = cv2.imread(image_path)
     if img is None:
         print(f"无法读取图片: {image_path}")
         return None
@@ -110,7 +113,7 @@ def test_single_image(image_path, model_path="run_posture_model/resnet18_run_pos
     print(f"处理图片: {image_path}")
     
     # 1. 提取关键点
-    result = extract_keypoints_from_image(image_path)
+    result = extract_keypoints_from_image(image_path,read=False)
     if result is None:
         print("关键点提取失败")
         return None
@@ -208,6 +211,69 @@ def test_single_image(image_path, model_path="run_posture_model/resnet18_run_pos
         'predicted_name': predicted_name,
         'confidence': confidence
     }
+
+def process_single_image(image, model_path="run_posture_model/resnet18_run_posture.pth"):
+    """
+    测试单张图片：显示图片并在左上角标注预测结果
+    """
+    # 类别名称
+    class_names = {0: "start", 1: "wave", 2: "final"}
+    
+    # 1. 提取关键点
+    result = extract_keypoints_from_image(image)
+    if result is None:
+        print("关键点提取失败")
+        return None
+    
+    keypoints, original_img, raw_keypoints = result
+    
+    # 2. 预处理
+    input_tensor = prepare_for_resnet(keypoints)
+    
+    # 3. 加载模型并预测
+    model, device = load_model(model_path)
+    
+    with torch.no_grad():
+        input_tensor = input_tensor.to(device)
+        outputs = model(input_tensor)
+        probabilities = torch.softmax(outputs, dim=1)
+        _, predicted = torch.max(outputs, 1)
+    
+    # 4. 获取预测结果
+    predicted_class = predicted.item()
+    predicted_name = class_names[predicted_class]
+    confidence = probabilities[0][predicted_class].item()
+    
+    # 在左上角添加预测结果
+    # text = f"{predicted_name}: {confidence:.1%}"
+    
+    # # 设置字体和大小
+    # font = cv2.FONT_HERSHEY_SIMPLEX
+    # font_scale = 0.8
+    # thickness = 2
+    
+    # # 计算文本大小
+    # text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+    
+    # 背景矩形
+    # bg_color = (0, 0, 0)  # 黑色背景
+    # text_color = (255, 255, 255)  # 白色文字
+    
+    # 根据不同类别使用不同颜色
+    if predicted_class == 0:  # 起跑
+        text_color = (0, 255, 0)  # 绿色
+    elif predicted_class == 1:  # 摆动
+        text_color = (255, 0, 0)  # 蓝色
+    else:  # 落地
+        text_color = (0, 0, 255)  # 红色
+    
+    # 在左上角绘制背景和文字
+    padding = 10
+    cv2.circle(image,(10,10),10,text_color,-1)#画圈，圆心，半径，颜色，粗细, 
+    return image
+
+
+
 if __name__ == "__main__":
     # 方式1：测试单张图片
     print("=" * 50)

@@ -13,7 +13,7 @@ l_leg = [11,13,15]
 cTime=0
 pTime=0
 # 加载YOLOv11n-pose模型
-model = YOLO("./weights/yolo11n-pose.pt")
+model = YOLO("./weights/yolo11m-pose.pt")
 
 # 定义关键点索引与名称的对应关系
 dic_points = {
@@ -150,6 +150,18 @@ def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜�
     angle = str(int(angle))
     cv2.putText(img,f"{text}:{angle}",position,fontFace=cv2.FONT_HERSHEY_SIMPLEX,fontScale=0.6,thickness=1,color=color)  #显示角度
     # 显示图像
+
+def draw_select(frame,list_p,d_h=True,d_b=True,d_l=True,pre=True,d_p=True):
+    if d_h:
+        draw_head(frame,list_p)
+    if d_b:
+        draw_body(frame,list_p)
+    if d_l:
+        draw_leg(frame,list_p)
+    if d_p:
+        p_pos=get_keypoints(list_p)
+        draw_point(p_pos)
+
 # 打开默认摄像头
 def process_frame(img):
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
@@ -183,7 +195,10 @@ while cap.isOpened():
     fps = 1/(cTime-pTime)
     pTime = cTime
     cv2.putText(frame,f"FPS:{int(fps)}",(30,50),cv2.FONT_HERSHEY_COMPLEX,1,(0,0,255),3)
+
     angle_show(list_p,(10,250),(0,0,255),"RightArm",r_arm,frame)
+    angle_show(list_p,(10,150),(0,0,255),"LeftArm",l_arm,frame)
+    
     cv2.imshow('my_window',frame)
     if cv2.waitKey(1) in [ord('q'),27]:
         break
