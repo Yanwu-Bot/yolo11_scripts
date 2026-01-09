@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from angle import *
 from utill import *
+from time_utils import show_time 
 
 # 加载YOLOv11n-pose模型
 model = YOLO("./weights/yolo11n-pose.pt")
@@ -77,7 +78,7 @@ def draw_body(frame,list_p):
     p9=p_pos[9]
     #右手
     p10=p_pos[10]
-     #鼻子
+    #鼻子
     p0=p_pos[0]
     p_m = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
 
@@ -87,7 +88,7 @@ def draw_body(frame,list_p):
     cv2.line(frame,p5,p7,(103,216,44),2)
     cv2.line(frame,p7,p9,(103,216,44),2)
     cv2.line(frame,p0,p_m,(0,0,255),3)
-   
+
 def draw_leg(frame,list_p):
     p_pos = get_keypoints(list_p)
     #左肩
@@ -173,6 +174,7 @@ def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜�
     # 显示图像
 
 if __name__ == "__main__":
+    start_time = time.time()
     list_p = process_frame(img_path)
     draw_select(img,list_p)
     resized = sclae_img(img,80)
@@ -181,5 +183,7 @@ if __name__ == "__main__":
     angle_show(list_p,(10,200),(0,0,255),"RightLeg",r_leg,resized)
     angle_show(list_p,(10,100),(0,0,255),"LeftLeg",l_leg,resized)
     cv2.imshow("Image Window", resized)
+    current_time = time.time()
+    print(show_time(start_time,current_time))
     cv2.waitKey(0)
     cv2.destroyAllWindows()

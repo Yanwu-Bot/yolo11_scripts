@@ -30,6 +30,7 @@ gap = 0
 VIDEO_FRAME_SPEED = 24
 TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
 current_frame = 1 
+START_TIME = time.time()
 
 model = YOLO("./weights/yolo11l-pose.pt")
 
@@ -43,13 +44,13 @@ def change_detector(a,b):
         return True
 
 #帧处理函数，对每帧画面进行处理
-def process_frame(img):
+def process_frame(img,preview=True):
     # start_time = time.time()
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
     #输入模型获取预测结果
     results = model(img_RGB)
     #预测单帧状态
-    process_single_image(img)
+    #process_single_image(img)
     global current_frame
     global i
     global step_fres
@@ -59,6 +60,7 @@ def process_frame(img):
         keypoints = result.keypoints
         for p in keypoints:
             list_p = p.data.tolist()
+            print(list_p)
             # print(list_p)
             # 显示角度
             angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
@@ -106,6 +108,10 @@ def process_frame(img):
     # print(show_time(start_time,current_time))
     current_frame += 1
     # 循环结束后再返回
+    draw_select(img,list_p)
+    if preview:
+        cv2.imshow('YOLO Detection', img)
+        cv2.waitKey(1)
     return img, list_p  # 注意：这里返回的是最后一个list_p
 
 #显示蹬起角度,不一定好用
@@ -151,7 +157,6 @@ def generate_video(input_path):
 
             try:
                 frame,list_p = process_frame(frame)
-                draw_select(frame,list_p)
                 
             except:
                 print('error')
@@ -166,7 +171,8 @@ def generate_video(input_path):
     out.release()
     cap.release()
     print('Video saved',output_path)
-#输入视频路径
+current_time = time.time()
+print(f"生成视频耗时：{show_time(START_TIME,current_time)}")
 input_path = 'video_origin/data_video/run_woman.mp4'
 generate_video(input_path)
 print(step)

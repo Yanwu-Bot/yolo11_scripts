@@ -102,7 +102,7 @@ def draw_body(frame,list_p):
     p9=p_pos[9]
     #右手
     p10=p_pos[10]
-     #鼻子
+    #鼻子
     p0=p_pos[0]
     p_m = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
 
@@ -361,3 +361,12 @@ def video_out(input_path,output_dir:str,pre:str):
     fps = cap.get(cv2.CAP_PROP_FPS)
     out = cv2.VideoWriter(output_path,fourcc,fps,(int(frame_size[0]),int(frame_size[1])))
     return out,output_path,cap
+
+#调整图片大小
+def sclae_img(img,percent):
+    scale_percent = percent  # 百分比
+    width = int(img.shape[1] * scale_percent / 100)
+    height = int(img.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
+    return resized
