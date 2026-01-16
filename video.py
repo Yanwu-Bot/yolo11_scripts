@@ -59,8 +59,9 @@ def process_frame(img,preview=True):
     for result in results:
         keypoints = result.keypoints
         for p in keypoints:
+
             list_p = p.data.tolist()
-            print(list_p)
+            print(list_p )
             # print(list_p)
             # 显示角度
             angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
@@ -93,22 +94,28 @@ def process_frame(img,preview=True):
                     gap = ((time_current[-1]-time_current[-2]) * TIME_GAP)
                     if gap > 0.1:
                         step_fres = round(1/gap,3)
+            #显示起步角度
             show_start(img,angle1,angle2)  
+            #显示步频
             cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,255))
+            #获得评估分数
             score = get_score(step_fres,0.8)
+            #显示分数
             cv2.putText(img, str(score), (10,200), 
                                         fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                                         fontScale=0.6, thickness=2, color=(0,200,0))  
+    #显示步数
     cv2.putText(img, str(i), (10,100), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
     # current_time = time.time() 
     # print(show_time(start_time,current_time))
     current_frame += 1
-    # 循环结束后再返回
+    # 绘制骨架
     draw_select(img,list_p)
+    #实时显示
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)

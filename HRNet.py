@@ -92,7 +92,6 @@ def init_models():
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         print("✅ 所有模型初始化完成")
-    
     return True
 
 def detect_person_with_yolo(frame, conf_threshold=0.5):
@@ -102,28 +101,23 @@ def detect_person_with_yolo(frame, conf_threshold=0.5):
     """
     if yolo_model is None:
         return None
-    
     # YOLO检测
     results = yolo_model(frame, verbose=False)
-    
     for result in results:
         boxes = result.boxes
         if boxes is not None:
             for box in boxes:
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
-                
                 # YOLO中person的类别ID通常是0
                 if cls_id == 0 and conf >= conf_threshold:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     return [float(x1), float(y1), float(x2), float(y2)], conf
-    
     return None, 0
 
 def predict_frame(frame):
     """处理单帧图像，检测关键点（使用YOLO+HRNet）"""
     global device, hrnet_model, yolo_model, person_info, hrnet_transform
-    
     # 初始化模型（如果未初始化）
     if yolo_model is None or hrnet_model is None:
         if not init_models():
@@ -228,25 +222,35 @@ def predict_frame(frame):
 def process_frame(img,preview=True):
     """处理视频帧"""
     global current_frame, step_count, step_fres, score, gap, time_current
-    
     # 预测单帧状态
-    # process_single_image(img)  # 暂时注释掉，如果不需要可以删除
-    
+    # process_single_image(img) 
     list_p, scores = predict_frame(img)
     
-    # 处理关键点数据（保持原有逻辑）
-    for keypoints in list_p:
-        if len(keypoints) == 0:
-            continue
-        
-        # 这里可以添加你的角度计算和其他处理逻辑
-        # 例如：angle_show, draw_direct_plot 等函数调用
-        # 由于你的angle.py和utill.py函数我没有，这里保持基本结构
-        
-        # 显示步数（使用step_count替代原来的i）
-        cv2.putText(img, str(step_count), (10, 100), 
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
-                    fontScale=0.6, thickness=2, color=(255,0,0))
+    # # list_p = keypoints.tolist()
+    angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
+    angle_la = angle_show(list_p, (10,40), (0,0,255), "LeftArm", l_arm, img)
+    angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
+    angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
+    p_pos = get_keypoints(list_p)
+    p13 = p_pos[13]
+    p14 = p_pos[14]
+    p15 = p_pos[15]
+    p16 = p_pos[16]
+    if change_detector(p15, p16):
+            step_count += 1
+            time_current.append(current_frame)
+            if step_count > 2 :
+                gap = ((time_current[-1]-time_current[-2]) * TIME_GAP)
+                if gap > 0.1:
+                    step_fres = round(1/gap,3)
+
+    cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
+    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+    fontScale=0.6, thickness=2, color=(255,0,255))
+    # 显示步数（使用step_count替代原来的i）
+    cv2.putText(img, str(step_count), (10, 100), 
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                fontScale=0.6, thickness=2, color=(255,0,0))
     current_frame += 1
     draw_select(img, list_p)
     if preview:
@@ -315,8 +319,18 @@ def progress_bar(current, total, bar_length=30, prefix="进度"):
     
     if current == total:
         print()
+
+def change_detector(a,b):
+    if a>b and step[-1] != 1:
+        step.append(1)
+        return True
+    elif a<b and step[-1] != 2:
+        step.append(2)
+        return True
+
+
 if __name__ == '__main__':
-    input_path = 'video_origin/data_video/run_woman.mp4'
+    input_path = 'video_origin/data_video/run_woman2.mp4'
     START_TIME = time.time()
     generate_video(input_path)
     current_time = time.time()

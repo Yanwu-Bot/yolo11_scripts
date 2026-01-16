@@ -5,8 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import os
 
-print('Use CUDA:', torch.cuda.is_available())
-
 # 种子值固定
 seed = 123
 np.random.seed(seed)
@@ -89,6 +87,7 @@ class COCOGraph():
         
         self.edge = self_link + neighbor_base
     
+    #生成一个矩阵表明距离2以内可到达的节点
     def get_adjacency(self):
         valid_hop = range(0, self.hop_size + 1, 1)
         adjacency = np.zeros((self.num_node, self.num_node))
@@ -130,7 +129,7 @@ class COCOGraph():
         
         DAD = np.dot(A, Dn)
         return DAD
-
+#空间GCN
 class SpatialGraphConvolution(nn.Module):
     def __init__(self, in_channels, out_channels, s_kernel_size):
         super().__init__()
@@ -152,9 +151,9 @@ class STGC_block(nn.Module):
         self.sgc = SpatialGraphConvolution(in_channels=in_channels,
                                         out_channels=out_channels,
                                         s_kernel_size=A_size[0])
-        
+        #连接权重可学习
         self.M = nn.Parameter(torch.ones(A_size))
-        
+        #只对关节点自身时间变化卷积
         self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
@@ -257,7 +256,7 @@ def load_best_model(model, optimizer=None, filename='best_model.pth'):
 def train_model(model, train_loader, test_loader, epochs=50, lr=0.001):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    
+    print(f"use {device} to train")
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5)

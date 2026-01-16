@@ -1,122 +1,205 @@
-#窗口内有一帧异常整个窗口异常
 import os
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
-import tkinter as tk
-from tkinter import simpledialog
-from matplotlib import rcParams #字体
-rcParams['font.family'] = 'SimHei'
+import json
+import transforms  # 假设这是HRNet的transform模块
 
 # ============================ 核心配置 ============================
-VIDEO_DIR = "video_origin\data_video"          
+VIDEO_DIR = "video_origin/data_video/use"          
 LABEL_SAVE_DIR = "video_labels"  
 SAVE_DIR = "video_dataset"     
 SAMPLE_FPS = 15                       
-WINDOW_SIZE = 30                      
+WINDOW_SIZE_LIB = [10,20,30] #不同的窗口大小识别过程不同         
+WINDOW_SIZE = WINDOW_SIZE_LIB[2]                       
 STEP = 15                             
-# COCO 17个关键点的标准索引+名称（精准对应）
-COCO_KEYPOINTS = [
-    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_hip", "right_hip",
-    "left_knee", "right_knee", "left_ankle", "right_ankle"
-]
-KEY_JOINTS = list(range(17))  # 保持17个关键点，但绘制时按标准索引来
 CONF_THRESHOLD = 0.5                  
-# 关键修复：先提取原始坐标，归一化只用于模型输入，绘制用原始坐标
 NORMALIZE = True                      
 TEST_SIZE = 0.2                       
 RANDOM_SEED = 42                      
 # =================================================================
 
-# 初始化YOLO11-Pose模型（确保加载官方权重，关键点更准）
-model = YOLO("weights\yolo11l-pose.pt")
+# 初始化模型
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# 创建目录
-os.makedirs(VIDEO_DIR, exist_ok=True)
-os.makedirs(LABEL_SAVE_DIR, exist_ok=True)
-os.makedirs(SAVE_DIR, exist_ok=True)
+# 加载YOLO模型
+yolo_model = YOLO("weights/yolo11n.pt")
 
-# -------------------------- 修复：精准提取关键点（原始+归一化） --------------------------
-def extract_pose_from_frame(frame, return_original=True):
-    """
-    提取17个关键点的原始坐标+归一化坐标
-    :param frame: 原始帧
-    :param return_original: 是否返回原始像素坐标
-    :return: norm_pose（归一化）, original_pose（原始像素坐标）
-    """
-    h, w = frame.shape[:2]  #获取帧高宽
-    results = model(frame, conf=CONF_THRESHOLD)
+# 加载HRNet模型
+weights_path = "HRnet/pytorch/pose_coco/pose_hrnet_w32_256x192.pth"
+keypoint_json_path = "HRnet/person_keypoints.json"
+
+# 读取JSON配置
+with open(keypoint_json_path, "r") as f:
+    person_info = json.load(f)
+
+# 创建HRNet模型
+from HRNet_model import HighResolutionNet  # 导入你的HRNet模型
+hrnet_model = HighResolutionNet(base_channel=32)
+weights = torch.load(weights_path, map_location=device)
+weights = weights if "model" not in weights else weights["model"]
+hrnet_model.load_state_dict(weights)
+hrnet_model.to(device)
+hrnet_model.eval()
+
+# HRNet数据转换
+resize_hw = (256, 192)
+hrnet_transform = transforms.Compose([
+    transforms.AffineTransform(scale=(1.25, 1.25), fixed_size=resize_hw),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+def detect_person_with_yolo(frame, conf_threshold=0.5):
+    """使用YOLO检测人物位置"""
+    results = yolo_model(frame, verbose=False)
+    for result in results:
+        boxes = result.boxes
+        if boxes is not None:
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                # YOLO中person的类别ID通常是0
+                if cls_id == 0 and conf >= conf_threshold:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    return [float(x1), float(y1), float(x2), float(y2)], conf
+    return None, 0
+
+def extract_pose_from_frame(frame):
+    """使用YOLO+HRNet提取17个关键点坐标"""
+    h, w = frame.shape[:2]
     
-    # 初始化原始坐标和归一化坐标
-    original_pose = np.zeros((17, 2))  # (17, 2) 原始像素坐标
-    norm_pose = np.zeros((17, 2))      # (17, 2) 归一化坐标
+    # 初始化坐标数组
+    original_pose = np.zeros((17, 2))  # 原始像素坐标
+    norm_pose = np.zeros((17, 2))      # 归一化坐标
     
-    if len(results[0].keypoints) > 0:
-        # 提取YOLO输出的关键点（x,y,conf）
-        kpts = results[0].keypoints.data[0].cpu().numpy()  # (17, 3)
-        for i in range(17):
-            x, y, conf = kpts[i]
-            if conf >= CONF_THRESHOLD:
-                # 原始像素坐标
-                original_pose[i] = [x, y]
-                # 归一化坐标（0-1）
-                norm_pose[i] = [x/w, y/h]
+    # 1. 使用YOLO检测人物
+    bbox, conf = detect_person_with_yolo(frame, CONF_THRESHOLD)
     
-    # 展平返回
-    norm_pose_flat = norm_pose.flatten()  # (34,)
-    original_pose_flat = original_pose.flatten()  # (34,)
+    if bbox is None:
+        # 没有检测到人物，返回零值
+        return norm_pose.flatten(), original_pose.flatten()
     
-    if return_original:
-        return norm_pose_flat, original_pose_flat
+    # 确保边界框在图像范围内
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, min(x1, w - 1))
+    y1 = max(0, min(y1, h - 1))
+    x2 = max(0, min(x2, w - 1))
+    y2 = max(0, min(y2, h - 1))
+    
+    # 2. 裁剪人物区域（添加少量padding）
+    padding = 10
+    roi_x1 = max(0, int(x1) - padding)
+    roi_y1 = max(0, int(y1) - padding)
+    roi_x2 = min(w, int(x2) + padding)
+    roi_y2 = min(h, int(y2) + padding)
+    
+    # 裁剪ROI
+    person_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+    
+    if person_roi.size == 0:
+        return norm_pose.flatten(), original_pose.flatten()
+    
+    # 确保图像是RGB格式
+    if len(person_roi.shape) == 3:
+        if person_roi.shape[2] == 3:
+            person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_BGR2RGB)
+        else:
+            person_rgb = person_roi
     else:
-        return norm_pose_flat
-
-# -------------------------- 修复：精准绘制关键点 --------------------------
-def draw_keypoints(frame, original_pose, thickness=2):
-    """
-    在原始帧上绘制精准的关键点+骨骼连线
-    :param frame: 原始帧
-    :param original_pose: 原始像素坐标的关键点 (34,) → 展平的(17,2)
-    :return: 带关键点的帧
-    """
-    frame_copy = frame.copy()
-    kpts = original_pose.reshape(-1, 2)  # 重新变成（17，2）
+        person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_GRAY2RGB)
     
-    # COCO关键点骨骼连线（按人体结构）
+    roi_height, roi_width = person_rgb.shape[:2]
+    
+    # 3. 在ROI上使用HRNet检测关键点
+    try:
+        img_tensor, target = hrnet_transform(
+            person_rgb, 
+            {"box": [0, 0, roi_width - 1, roi_height - 1]}
+        )
+        img_tensor = torch.unsqueeze(img_tensor, dim=0)
+        
+        with torch.no_grad():
+            outputs = hrnet_model(img_tensor.to(device))
+            
+            # 翻转测试增强
+            flip_test = True
+            if flip_test:
+                flip_tensor = transforms.flip_images(img_tensor)
+                flip_outputs = torch.squeeze(
+                    transforms.flip_back(hrnet_model(flip_tensor.to(device)), person_info["flip_pairs"]),
+                )
+                flip_outputs[..., 1:] = flip_outputs.clone()[..., 0: -1]
+                outputs = (outputs + flip_outputs) * 0.5
+            
+            keypoints, scores = transforms.get_final_preds(outputs, [target["reverse_trans"]], True)
+            
+            # 处理输出结果
+            keypoints = np.squeeze(keypoints)
+            scores = np.squeeze(scores)
+            
+            if scores.ndim == 0:
+                scores = np.array([scores])
+            
+            # 4. 将关键点坐标转换回原始图像
+            for i, (kp, score_val) in enumerate(zip(keypoints, scores)):
+                if hasattr(kp, '__iter__') and len(kp) >= 2:
+                    # HRNet输出的坐标（相对于ROI）
+                    roi_x, roi_y = float(kp[0]), float(kp[1])
+                    
+                    # 转换到原始图像坐标
+                    orig_x = roi_x1 + roi_x
+                    orig_y = roi_y1 + roi_y
+                    
+                    # 确保坐标在图像范围内
+                    orig_x = max(0, min(orig_x, w - 1))
+                    orig_y = max(0, min(orig_y, h - 1))
+                    
+                    # 保存坐标
+                    original_pose[i] = [orig_x, orig_y]
+                    norm_pose[i] = [orig_x/w, orig_y/h] if NORMALIZE else [orig_x, orig_y]
+    except Exception as e:
+        print(f"HRNet处理出错: {e}")
+    
+    return norm_pose.flatten(), original_pose.flatten()
+
+def draw_keypoints(frame, original_pose):
+    """在帧上绘制关键点和骨架（与之前相同）"""
+    frame_copy = frame.copy()
+    kpts = original_pose.reshape(-1, 2)
+    
+    # COCO关键点骨骼连线
     skeleton = [
         (0, 1), (0, 2), (1, 3), (2, 4),  # 头部
         (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # 上肢
         (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)  # 下肢
     ]
     
-    # 1. 绘制骨骼连线
+    # 绘制骨骼连线
     for (i, j) in skeleton:
         x1, y1 = int(kpts[i][0]), int(kpts[i][1])
         x2, y2 = int(kpts[j][0]), int(kpts[j][1])
-        # 只绘制有效关键点（坐标>0）
         if x1 > 0 and y1 > 0 and x2 > 0 and y2 > 0:
-            cv2.line(frame_copy, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+            cv2.line(frame_copy, (x1, y1), (x2, y2), (0, 255, 0), 2)
     
-    # 2. 绘制关键点（不同关节不同颜色）
-    colors = [
-        (0, 0, 255),  # 头部（红）
-        (255, 0, 0),  # 上肢（蓝）
-        (0, 255, 0)   # 下肢（绿）
-    ]
+    # 绘制关键点
+    colors = [(0, 0, 255), (255, 0, 0), (0, 255, 0)]  # 红、蓝、绿
+    
     # 头部关键点（0-4）
     for i in range(5):
         x, y = int(kpts[i][0]), int(kpts[i][1])
         if x > 0 and y > 0:
             cv2.circle(frame_copy, (x, y), 5, colors[0], -1)
+    
     # 上肢关键点（5-10）
     for i in range(5, 11):
         x, y = int(kpts[i][0]), int(kpts[i][1])
         if x > 0 and y > 0:
             cv2.circle(frame_copy, (x, y), 5, colors[1], -1)
+    
     # 下肢关键点（11-16）
     for i in range(11, 17):
         x, y = int(kpts[i][0]), int(kpts[i][1])
@@ -125,20 +208,11 @@ def draw_keypoints(frame, original_pose, thickness=2):
     
     return frame_copy
 
-# -------------------------- 修复：手动标注（精准关键点可视化） --------------------------
 def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list):
-    """
-    可视化带精准关键点的帧，手动标注0/1（优化：键盘直接输入，无需点击输入框）
-    :param video_path: 视频路径
-    :param norm_pose_seq: 归一化姿态序列 (帧数, 34)
-    :param original_pose_seq: 原始像素坐标姿态序列 (帧数, 34)
-    :param frame_list: 原始帧列表
-    :return: labels (帧数,)
-    """
+    """手动标注（与之前相同）"""
     video_name = os.path.basename(video_path).split('.')[0]
     label_save_path = os.path.join(LABEL_SAVE_DIR, f"{video_name}.txt")
     
-    # 加载已有标注
     if os.path.exists(label_save_path):
         print(f"加载已有标注：{video_name}.txt")
         labels = np.loadtxt(label_save_path).astype(int)
@@ -146,8 +220,6 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
     
     labels = []
     total_frames = len(frame_list)
-    
-    # 移除tkinter依赖（改用键盘输入）
     print(f"\n========== 标注视频：{video_name} ==========")
     print("      标注操作说明：      ")
     print("   按 0 键 → 标注为正常")
@@ -158,10 +230,8 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
     print("   按 空格键 → 暂停/继续标注（可选）")
     print("==============================================")
     
-    # 创建显示窗口（固定名称，避免多窗口）
-    cv2.namedWindow(f"精准关键点标注 - {video_name}", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(f"精准关键点标注 - {video_name}", 800, 600)
-    
+    cv2.namedWindow(f"关键点标注 - {video_name}", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(f"关键点标注 - {video_name}", 800, 600)
     pause = False  # 暂停标志
     for i in range(total_frames):
         if pause:
@@ -244,9 +314,8 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
     
     return labels
 
-# -------------------------- 修复：视频处理流程（保存原始关键点） --------------------------
 def process_single_video(video_path):
-    """处理单视频：抽帧→提精准关键点→手动标注"""
+    """处理单视频"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"无法打开视频：{video_path}")
@@ -254,21 +323,27 @@ def process_single_video(video_path):
     
     video_fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    #采样帧数，视频变为SAMPLE_FPS帧
     frame_interval = max(1, int(video_fps / SAMPLE_FPS))
     
-    # 保存三类数据：归一化姿态、原始姿态、原始帧
+    # 计算实际要处理的帧数
+    num_frames_to_process = (total_frames + frame_interval - 1) // frame_interval
+    
     norm_pose_list = []
     original_pose_list = []
     frame_list = []
     
-    for frame_idx in range(0, total_frames, frame_interval):
-        #转移到索引帧
+    # 使用 tqdm 显示帧处理进度
+    for frame_idx in tqdm(range(0, total_frames, frame_interval), 
+                        desc=f"处理帧", 
+                        total=num_frames_to_process,
+                        leave=False,
+                        ncols=80):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
             break
-        # 提取精准的关键点（原始+归一化）
+        
+        # 使用YOLO+HRNet提取关键点
         norm_pose, original_pose = extract_pose_from_frame(frame)
         norm_pose_list.append(norm_pose)
         original_pose_list.append(original_pose)
@@ -280,70 +355,74 @@ def process_single_video(video_path):
         print(f"帧数不足：{len(norm_pose_list)} < {WINDOW_SIZE}")
         return None, None
     
-    # 预处理归一化姿态（用于模型输入）
     norm_pose_seq = np.array(norm_pose_list)
     original_pose_seq = np.array(original_pose_list)
     
-    # 手动标注（用原始关键点绘制）
+    # 手动标注
     labels = manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list)
     
-    # 滑动窗口切分（用归一化姿态）
+    # 滑动窗口切分
     X_video, y_video = sliding_window_split(norm_pose_seq, labels)
     return X_video, y_video
 
-def preprocess_pose_sequence(pose_seq):
-    """预处理归一化姿态序列（填充缺失值）"""
-    processed_seq = pose_seq.copy()
-    zero_frames = np.all(processed_seq == 0, axis=1)
-    for i in range(len(processed_seq)):
-        if zero_frames[i]:
-            neighbors = []
-            if i > 0 and not zero_frames[i-1]:
-                neighbors.append(processed_seq[i-1])
-            if i < len(processed_seq)-1 and not zero_frames[i+1]:
-                neighbors.append(processed_seq[i+1])
-            if neighbors:
-                processed_seq[i] = np.mean(neighbors, axis=0)
-            else:
-                non_zero = processed_seq[~zero_frames]
-                if len(non_zero) > 0:
-                    processed_seq[i] = np.mean(non_zero, axis=0)
-    return processed_seq
-
 def sliding_window_split(pose_seq, labels=None):
-    """滑动窗口切分"""
+    """滑动窗口切分 - 改进版1：连续异常检测"""
     X, y = [], []
-    #滑动窗口，STEP为滑动步长
-    for i in range(0, len(pose_seq) - WINDOW_SIZE + 1, STEP):
-        window = pose_seq[i:i+WINDOW_SIZE]
-        X.append(window)
-        if np.any(labels[i:i+WINDOW_SIZE] == 1):  # 假设1是异常
-            y.append(1)
-        else:
+    
+    if labels is None:
+        # 如果没有标签，返回全0
+        for i in range(0, len(pose_seq) - WINDOW_SIZE + 1, STEP):
+            X.append(pose_seq[i:i+WINDOW_SIZE])
             y.append(0)
+    else:
+        for i in range(0, len(pose_seq) - WINDOW_SIZE + 1, STEP):
+            window = pose_seq[i:i+WINDOW_SIZE]
+            window_labels = labels[i:i+WINDOW_SIZE]
+            X.append(window)
+            # 核心改进：需要连续异常才标为异常
+            abnormal_count = np.sum(window_labels == 1)
+            # 策略1：连续异常检测
+            max_consecutive = 0
+            current_streak = 0
+            for label in window_labels:
+                if label == 1:
+                    current_streak += 1
+                    max_consecutive = max(max_consecutive, current_streak)
+                else:
+                    current_streak = 0
+            # 判断条件：
+            # 1. 异常帧比例 > 20%
+            # 2. 有至少3帧连续异常（摔倒通常不是孤立帧）
+            abnormal_ratio = abnormal_count / WINDOW_SIZE
+            if abnormal_ratio > 0.2 and max_consecutive >= 3:
+                y.append(1)
+            else:
+                y.append(0)
     X = np.array(X)
-    y = np.array(y) if labels is not None else None
+    y = np.array(y)
+    # 打印统计信息
+    print(f"生成 {len(X)} 个窗口，其中异常窗口: {np.sum(y==1)} ({np.sum(y==1)/len(y)*100:.1f}%)")
     return X, y
 
-def print_dataset_info(X_train, y_train, X_test, y_test):
-    """打印数据集信息"""
-    print("\n==================== 数据集信息 ====================")
-    print(f"特征维度：17关节×2坐标=34维（归一化）")
-    print(f"时间步长：{WINDOW_SIZE}帧")
-    print(f"\n训练集：总数={len(X_train)} | 正常={np.sum(y_train==0)} | 异常={np.sum(y_train==1)}")
-    print(f"测试集：总数={len(X_test)} | 正常={np.sum(y_test==0)} | 异常={np.sum(y_test==1)}")
-    print("====================================================")
-
+# 在 main() 函数中修改视频处理循环
 def main():
+    """主函数"""
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    os.makedirs(LABEL_SAVE_DIR, exist_ok=True)
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    
     video_ext = ('.mp4', '.avi', '.mov', '.mkv')
     video_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith(video_ext)]
+    
     if not video_files:
         print("未找到视频文件！")
         return
     
     all_X, all_y = [], []
     video_sample_counts = []
-    for video_file in tqdm(video_files, desc="处理视频"):
+    
+    # 添加 tqdm 包装器
+    for video_file in tqdm(video_files, desc="处理视频", unit="video", ncols=80):
         video_path = os.path.join(VIDEO_DIR, video_file)
         X_video, y_video = process_single_video(video_path)
         if X_video is None:
@@ -356,7 +435,7 @@ def main():
         print("无有效数据！")
         return
     
-    # 合并+划分数据集
+    # 合并数据集
     X_total = np.concatenate(all_X, axis=0)
     y_total = np.concatenate(all_y, axis=0)
     video_indices = []
@@ -364,6 +443,7 @@ def main():
         video_indices.extend([vid_idx] * count)
     video_indices = np.array(video_indices)
     
+    # 划分数据集
     X_train, X_test, y_train, y_test = train_test_split(
         X_total, y_total, test_size=TEST_SIZE,
         stratify=video_indices, random_state=RANDOM_SEED
@@ -374,9 +454,15 @@ def main():
     np.savez(os.path.join(SAVE_DIR, "test.npz"), X=X_test, y=y_test)
     
     # 打印信息
-    print_dataset_info(X_train, y_train, X_test, y_test)
-    print(f" 数据集保存至：{SAVE_DIR}")
-    print(f" 关键点已精准校准，标注标签保存至：{LABEL_SAVE_DIR}")
+    print(f"\n==================== 数据集信息 ====================")
+    print(f"特征维度：17关节×2坐标=34维")
+    print(f"时间步长：{WINDOW_SIZE}帧")
+    print(f"训练集：总数={len(X_train)} | 正常={np.sum(y_train==0)} | 异常={np.sum(y_train==1)}")
+    print(f"测试集：总数={len(X_test)} | 正常={np.sum(y_test==0)} | 异常={np.sum(y_test==1)}")
+    print(f"数据集保存至：{SAVE_DIR}")
+    print(f"标注标签保存至：{LABEL_SAVE_DIR}")
+    print(f"关键点检测：YOLO + HRNet")
+    print("====================================================")
 
 def load_dataset():
     """加载数据集"""
