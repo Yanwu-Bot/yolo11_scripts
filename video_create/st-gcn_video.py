@@ -315,6 +315,7 @@ def predict_frame_sequence(model, pose_window):
     with torch.no_grad():
         output = model(pose_tensor)
         probabilities = F.softmax(output, dim=1)
+        #不正常的概率
         pred_prob = probabilities[0, 1].cpu().numpy()
     
     pred_label = 1 if pred_prob > PRED_THRESHOLD else 0
@@ -456,7 +457,7 @@ def infer_video_simple(model_path, video_path, save_output=False):
 if __name__ == "__main__":
     # 使用示例
     model_path = "model/best_model.pth"
-    video_path = "video_origin\data_video\\run_woman.mp4"  # 你的视频路径
+    video_path = "video_origin/data_video/run_woman.mp4"  # 你的视频路径
     
     # 直接调用简化版本
     infer_video_simple(

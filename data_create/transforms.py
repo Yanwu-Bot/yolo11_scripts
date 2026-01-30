@@ -108,11 +108,11 @@ def decode_keypoints(outputs, origin_hw, num_joints: int = 17):
     scores = np.array(scores, dtype=float)
     # convert to full image scale
     keypoints[:, 0] = np.clip(keypoints[:, 0] / heatmap_w * origin_hw[1],
-                            a_min=0,
-                            a_max=origin_hw[1])
+                              a_min=0,
+                              a_max=origin_hw[1])
     keypoints[:, 1] = np.clip(keypoints[:, 1] / heatmap_h * origin_hw[0],
-                            a_min=0,
-                            a_max=origin_hw[0])
+                              a_min=0,
+                              a_max=origin_hw[0])
     return keypoints, scores
 
 
@@ -121,7 +121,7 @@ def resize_pad(img: np.ndarray, size: tuple):
     src = np.array([[0, 0],       # 原坐标系中图像左上角点
                     [w - 1, 0],   # 原坐标系中图像右上角点
                     [0, h - 1]],  # 原坐标系中图像左下角点
-                    dtype=np.float32)
+                   dtype=np.float32)
     dst = np.zeros((3, 2), dtype=np.float32)
     if h / w > size[0] / size[1]:
         # 需要在w方向padding
@@ -370,9 +370,9 @@ class RandomHorizontalFlip(object):
 
 class KeypointToHeatMap(object):
     def __init__(self,
-                heatmap_hw: Tuple[int, int] = (256 // 4, 192 // 4),
-                gaussian_sigma: int = 2,
-                keypoints_weights=None):
+                 heatmap_hw: Tuple[int, int] = (256 // 4, 192 // 4),
+                 gaussian_sigma: int = 2,
+                 keypoints_weights=None):
         self.heatmap_hw = heatmap_hw
         self.sigma = gaussian_sigma
         self.kernel_radius = self.sigma * 3

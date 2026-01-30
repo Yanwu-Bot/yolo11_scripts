@@ -11,11 +11,11 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 # ============================ 核心配置 ============================
-VIDEO_DIR = "video_origin\data_video"          
+VIDEO_DIR = "video_origin/data_video/use"          
 LABEL_SAVE_DIR = "video_labels"  
 SAVE_DIR = "video_dataset"     
 SAMPLE_FPS = 15                       
-WINDOW_SIZE = 30                      
+WINDOW_SIZE = 10                      
 STEP = 15                             
 # COCO 17个关键点的标准索引+名称（精准对应）
 COCO_KEYPOINTS = [

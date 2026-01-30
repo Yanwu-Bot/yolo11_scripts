@@ -8,7 +8,6 @@ import ultralytics
 from ultralytics import YOLO
 import cv2
 import numpy as np
-from angle import *
 from utill import *
 from collections import deque
 from time_utils import show_time
@@ -22,15 +21,19 @@ l_arm = [5,7,9]
 r_leg = [12,14,16]
 l_leg = [11,13,15]
 i = 0
+cycles = 0 
 score = 0
 step_fres = 0
 frame_count = 0
 gap = 0
 #24帧每秒
 VIDEO_FRAME_SPEED = 24
+#每帧时间
 TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
 current_frame = 1 
 START_TIME = time.time()
+Key_point_list = []
+Key_point_acceleration = []
 
 model = YOLO("./weights/yolo11l-pose.pt")
 
@@ -44,24 +47,27 @@ def change_detector(a,b):
         return True
 
 #帧处理函数，对每帧画面进行处理
-def process_frame(img,preview=True):
+def process_frame(img,preview=True,wait_key=False):
     # start_time = time.time()
     img_RGB = cv2.cvtColor(img,cv2.COLOR_BGR2RGB) 
     #输入模型获取预测结果
     results = model(img_RGB)
     #预测单帧状态
     #process_single_image(img)
+    global cycles
     global current_frame
     global i
     global step_fres
     global score
     global gap
+    #循环次数
+    cycles += 1
     for result in results:
         keypoints = result.keypoints
         for p in keypoints:
-
+            #三级[[[(x,y)]]]
             list_p = p.data.tolist()
-            print(list_p )
+            # print(list_p)
             # print(list_p)
             # 显示角度
             angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
@@ -74,6 +80,23 @@ def process_frame(img,preview=True):
             draw_direct_plot(img,hist_ll ,int(angle_ll), pos=(img.shape[1]-560, 300), label="angle_ll")
             # 获取关键点位置
             p_pos = get_keypoints(list_p)
+            #一级[(x,y)]
+            #print (p_pos)
+            #每两帧计算一次加速度
+            if cycles % 2 == 0:
+                Key_point_acceleration.clear()
+                #如果列表为空
+                if not Key_point_list:
+                    for j in range(17):
+                        Key_point_list.append(p_pos[j])
+                else:
+                    for j in range(17):
+                        Key_point_acceleration.append(acceleration(p_pos[j],Key_point_list[j],TIME_GAP))
+                    Key_point_list.clear()
+                    for j in range(17):
+                        Key_point_list.append(p_pos[j])
+            print(max(Key_point_acceleration))
+        
             # ratios, abnormal_flags = limb_calculation(p_pos)
             # w_point = wrong_point(abnormal_flags,weight)
             # cv2.putText(img, f'wrong_point:{str(w_point)}', (10,250), 
@@ -116,9 +139,20 @@ def process_frame(img,preview=True):
     # 绘制骨架
     draw_select(img,list_p)
     #实时显示
+    # if preview:
+    #     cv2.imshow('YOLO Detection', img)
+    #     cv2.waitKey(1)
+    # return img, list_p  # 注意：这里返回的是最后一个list_p
+    
+    #逐帧分析
     if preview:
         cv2.imshow('YOLO Detection', img)
-        cv2.waitKey(1)
+        if wait_key:
+            # 等待任意按键，按下后继续
+            cv2.waitKey(0)
+        else:
+            # 原来的逻辑：等待1ms
+            cv2.waitKey(1)
     return img, list_p  # 注意：这里返回的是最后一个list_p
 
 #显示蹬起角度,不一定好用
@@ -163,7 +197,7 @@ def generate_video(input_path):
                 break
 
             try:
-                frame,list_p = process_frame(frame)
+                frame,list_p = process_frame(frame,wait_key=False)
                 
             except:
                 print('error')

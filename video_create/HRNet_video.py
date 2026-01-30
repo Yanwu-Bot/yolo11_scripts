@@ -9,7 +9,6 @@ from run_test import *
 from tqdm import tqdm
 import time
 import cv2
-from angle import *
 from utill import *
 from collections import deque
 from time_utils import show_time
