@@ -448,13 +448,23 @@ class KeypointTrajectoryTracker:
         # 按身体部位分组（便于分别可视化）
         self.body_part_groups = {
             "head": [0, 1, 2, 3, 4],
-            "upper_body": [5, 6, 7, 8, 9, 10],
-            "lower_body": [11, 12, 13, 14, 15, 16],
             "left_arm": [5, 7, 9],
             "right_arm": [6, 8, 10],
             "left_leg": [11, 13, 15],
             "right_leg": [12, 14, 16]
         }
+        
+        # 新增：中心点颜色方案（6个不同的鲜明颜色）
+        self.center_colors = plt.cm.Set1(np.linspace(0, 1, 6))[:, :3] * 255
+        self.center_colors = self.center_colors.astype(int)
+        
+        # 新增：中心点名称
+        self.center_names = [
+            "头部中心", "左臂中心", "右臂中心", "左腿中心", "右腿中心", "身体中心"
+        ]
+        
+        # 新增：中心点轨迹存储（6个中心点）
+        self.center_trajectories = [deque(maxlen=history_length) for _ in range(6)]
         
         # 存储帧数用于时间轴
         self.frame_numbers = deque(maxlen=history_length)
@@ -470,33 +480,93 @@ class KeypointTrajectoryTracker:
         
         for i in range(min(len(keypoints), self.num_keypoints)):
             point = tuple(keypoints[i])
+            # 存储关键点坐标，trajectories[i]分别记录17个关键点历史坐标
             self.trajectories[i].append(point)
+        
+        # 新增：计算并存储中心点
+        self._update_center_points(keypoints)
+    
+    def _update_center_points(self, keypoints):
+        """计算6个中心点的坐标"""
+        # 1. 头部中心（鼻子的位置，因为鼻子通常比较稳定）
+        head_center = keypoints[0] if len(keypoints) > 0 else (0, 0)
+        # 2. 左臂中心（左肩、左肘、左腕的平均值）
+        left_arm_points = [keypoints[i] for i in self.body_part_groups["left_arm"] 
+                            if i < len(keypoints) and all(not np.isnan(p) for p in keypoints[i])]
+        left_arm_center = self._calculate_center(left_arm_points)
+        # 3. 右臂中心（右肩、右肘、右腕的平均值）
+        right_arm_points = [keypoints[i] for i in self.body_part_groups["right_arm"] 
+                            if i < len(keypoints) and all(not np.isnan(p) for p in keypoints[i])]
+        right_arm_center = self._calculate_center(right_arm_points)      
+        # 4. 左腿中心（左髋、左膝、左踝的平均值）
+        left_leg_points = [keypoints[i] for i in self.body_part_groups["left_leg"] 
+                            if i < len(keypoints) and all(not np.isnan(p) for p in keypoints[i])]
+        left_leg_center = self._calculate_center(left_leg_points)       
+        # 5. 右腿中心（右髋、右膝、右踝的平均值）
+        right_leg_points = [keypoints[i] for i in self.body_part_groups["right_leg"] 
+                            if i < len(keypoints) and all(not np.isnan(p) for p in keypoints[i])]
+        right_leg_center = self._calculate_center(right_leg_points)
+        # 6. 身体中心（所有有效关键点的平均值）
+        valid_points = [point for i, point in enumerate(keypoints) 
+                        if i < len(keypoints) and all(not np.isnan(p) for p in point)]
+        body_center = self._calculate_center(valid_points)
+        # 存储中心点轨迹
+        centers = [
+            head_center,
+            left_arm_center,
+            right_arm_center,
+            left_leg_center,
+            right_leg_center,
+            body_center
+        ]
+        
+        for i, center in enumerate(centers):
+            self.center_trajectories[i].append(center)
+    
+    def _calculate_center(self, points):
+        """计算一组点的中心"""
+        if not points:
+            return (np.nan, np.nan)
+        # 过滤掉无效点（包含nan的点）
+        valid_points = [p for p in points if all(not np.isnan(coord) for coord in p)]
+        if not valid_points:
+            return (np.nan, np.nan)
+        avg_x = np.mean([p[0] for p in valid_points])
+        avg_y = np.mean([p[1] for p in valid_points])
+        return (avg_x, avg_y)
     
     def draw_trajectory_on_frame(self, frame):
         """
         在当前帧上绘制轨迹（半透明效果）
+        现在只绘制6个中心点的轨迹
         """
         overlay = frame.copy()
         
-        for i in range(self.num_keypoints):
-            trajectory = list(self.trajectories[i])
+        # 只绘制6个中心点的轨迹
+        for i in range(6):  # 6个中心点
+            trajectory = list(self.center_trajectories[i])
             if len(trajectory) < 2:
                 continue
             
+            # 过滤掉无效点（包含nan的点）
+            valid_points = [p for p in trajectory if all(not np.isnan(coord) for coord in p)]
+            if len(valid_points) < 2:
+                continue
+            
             # 将轨迹点转换为整数坐标
-            points = np.array(trajectory, dtype=np.int32)
+            points = np.array(valid_points, dtype=np.int32)
             
             # 绘制轨迹线（使用半透明）
             for j in range(1, len(points)):
                 alpha = j / len(points)  # 越新的轨迹越明显
-                color = tuple(map(int, self.colors[i]))
+                color = tuple(map(int, self.center_colors[i]))
                 
                 cv2.line(
                     overlay, 
                     tuple(points[j-1]), 
                     tuple(points[j]), 
                     color, 
-                    2
+                    3  # 中心点轨迹线宽一些
                 )
             
             # 绘制最新关键点
@@ -504,15 +574,15 @@ class KeypointTrajectoryTracker:
                 cv2.circle(
                     overlay, 
                     tuple(points[-1]), 
-                    4, 
-                    tuple(map(int, self.colors[i])), 
+                    6,  # 中心点大一些
+                    tuple(map(int, self.center_colors[i])), 
                     -1
                 )
         
         # 融合原始帧和轨迹层
         cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
         
-        # 在左上角显示图例
+        # 在左上角显示图例（修改为显示中心点）
         self._draw_legend(frame)
         
         return frame
@@ -522,101 +592,175 @@ class KeypointTrajectoryTracker:
         height, width = frame.shape[:2]
         
         # 绘制图例背景
-        legend_bg = np.zeros((200, 250, 3), dtype=np.uint8)
+        legend_bg = np.zeros((200, 300, 3), dtype=np.uint8)  # 稍微加宽
         legend_bg[:] = (30, 30, 30)
         
-        # 选择几个重要的关键点显示
-        important_points = [0, 5, 6, 11, 12, 13, 14, 15, 16]
-        selected_names = [self.keypoint_names[i] for i in important_points]
-        selected_colors = [self.colors[i] for i in important_points]
-        
-        # 在图例上绘制关键点名称和颜色
-        for idx, (name, color) in enumerate(zip(selected_names, selected_colors)):
-            y_pos = 30 + idx * 20
-            cv2.rectangle(legend_bg, (10, y_pos-10), (20, y_pos), 
-                         tuple(map(int, color)), -1)
-            cv2.putText(legend_bg, name, (30, y_pos), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        # 绘制6个中心点的图例
+        for idx in range(6):
+            if len(self.center_trajectories[idx]) == 0:
+                continue
+                
+            y_pos = 30 + idx * 25  # 增加行间距
+            color = tuple(map(int, self.center_colors[idx]))
+            name = self.center_names[idx]
+            
+            # 绘制颜色方块
+            cv2.rectangle(legend_bg, (10, y_pos-10), (30, y_pos+5), color, -1)
+            
+            # 绘制名称文本
+            cv2.putText(legend_bg, name, (40, y_pos), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # 将图例叠加到帧上
-        frame[10:210, 10:260] = cv2.addWeighted(
-            frame[10:210, 10:260], 0.3, 
+        frame[10:210, 10:310] = cv2.addWeighted(
+            frame[10:210, 10:310], 0.3, 
             legend_bg, 0.7, 0
         )
     
     def plot_trajectory_curves(self, save_path=None):
         """
         绘制关键点运动轨迹曲线图（x和y随时间变化）
+        现在只绘制6个中心点的曲线
         """
-        if not any(len(traj) > 0 for traj in self.trajectories):
-            print("没有轨迹数据可绘制")
+        if not any(len(traj) > 0 for traj in self.center_trajectories):
+            print("没有中心点轨迹数据可绘制")
             return
         
-        # 创建子图
-        fig, axes = plt.subplots(2, 1, figsize=(15, 10))
+        # 创建包含图例区域的图形
+        fig = plt.figure(figsize=(18, 10))
         
-        # 按身体部位分组
-        groups = {
-            "头部": self.body_part_groups["head"],
-            "上肢": self.body_part_groups["left_arm"] + self.body_part_groups["right_arm"],
-            "下肢": self.body_part_groups["left_leg"] + self.body_part_groups["right_leg"]
-        }
+        # 创建网格：左边大图，右边图例
+        gs = fig.add_gridspec(2, 2, width_ratios=[4, 1], hspace=0.3)
         
-        for group_name, indices in groups.items():
-            # 绘制x坐标变化
-            for idx in indices:
-                if len(self.trajectories[idx]) > 0:
-                    x_coords = [p[0] for p in self.trajectories[idx]]
-                    frames = list(self.frame_numbers)[-len(x_coords):]
-                    
-                    axes[0].plot(frames, x_coords, 
-                               color=self.colors[idx]/255, 
-                               label=f"{self.keypoint_names[idx]}_x",
-                               alpha=0.6)
+        # 创建坐标轴
+        ax_x = fig.add_subplot(gs[0, 0])
+        ax_y = fig.add_subplot(gs[1, 0])
+        ax_legend = fig.add_subplot(gs[:, 1])
+        
+        # 绘制6个中心点的曲线
+        for i in range(6):
+            if len(self.center_trajectories[i]) > 0:
+                # 过滤掉无效点
+                valid_points = [p for p in self.center_trajectories[i] 
+                                if all(not np.isnan(coord) for coord in p)]
+                if len(valid_points) < 2:
+                    continue
+                
+                # 获取x坐标
+                x_coords = [p[0] for p in valid_points]
+                # 获取对应的时间帧
+                frames = list(self.frame_numbers)[-len(valid_points):]
+                
+                # 绘制x坐标变化
+                line, = ax_x.plot(frames, x_coords, 
+                                color=self.center_colors[i]/255, 
+                                linestyle='-',
+                                alpha=0.8,
+                                linewidth=2,
+                                label=self.center_names[i])
+                
+                # 绘制y坐标变化
+                y_coords = [p[1] for p in valid_points]
+                ax_y.plot(frames, y_coords, 
+                            color=self.center_colors[i]/255, 
+                            linestyle='-',
+                            alpha=0.8,
+                            linewidth=2,
+                            label=self.center_names[i])
             
-            # 绘制y坐标变化
-            for idx in indices:
-                if len(self.trajectories[idx]) > 0:
-                    y_coords = [p[1] for p in self.trajectories[idx]]
-                    frames = list(self.frame_numbers)[-len(y_coords):]
-                    
-                    axes[1].plot(frames, y_coords, 
-                               color=self.colors[idx]/255, 
-                               label=f"{self.keypoint_names[idx]}_y",
-                               alpha=0.6)
+        # 设置标题和标签
+        ax_x.set_title("身体中心点X坐标随时间变化", fontsize=12, fontweight='bold')
+        ax_x.set_xlabel("帧数")
+        ax_x.set_ylabel("X坐标 (像素)")
+        ax_x.grid(True, alpha=0.3)
+        ax_x.legend(loc='upper right', fontsize=10)  # 添加图例
         
-        axes[0].set_title("关键点X坐标随时间变化")
-        axes[0].set_xlabel("帧数")
-        axes[0].set_ylabel("X坐标")
-        axes[0].grid(True, alpha=0.3)
+        ax_y.set_title("身体中心点Y坐标随时间变化", fontsize=12, fontweight='bold')
+        ax_y.set_xlabel("帧数")
+        ax_y.set_ylabel("Y坐标 (像素)")
+        ax_y.grid(True, alpha=0.3)
+        ax_y.legend(loc='upper right', fontsize=10)  # 添加图例
         
-        axes[1].set_title("关键点Y坐标随时间变化")
-        axes[1].set_xlabel("帧数")
-        axes[1].set_ylabel("Y坐标")
-        axes[1].grid(True, alpha=0.3)
+        # 在右侧图例区域显示详细信息
+        ax_legend.axis('off')  # 隐藏坐标轴
+        ax_legend.set_title("中心点信息", fontsize=12, fontweight='bold', pad=20)
+        
+        # 创建详细的信息文本
+        info_text = "跟踪的6个中心点:\n\n"
+        for i in range(6):
+            color_hex = '#{:02x}{:02x}{:02x}'.format(
+                int(self.center_colors[i][0]),
+                int(self.center_colors[i][1]),
+                int(self.center_colors[i][2])
+            )
+            trajectory_length = len(self.center_trajectories[i])
+            valid_length = len([p for p in self.center_trajectories[i] 
+                                if all(not np.isnan(coord) for coord in p)])
+            
+            info_text += f"• {self.center_names[i]}:\n"
+            info_text += f"  颜色: {color_hex}\n"
+            info_text += f"  有效点: {valid_length}/{trajectory_length}\n\n"
+        
+        # 显示信息文本
+        ax_legend.text(0.1, 0.95, info_text, 
+                        transform=ax_legend.transAxes,
+                        fontsize=9,
+                        verticalalignment='top',
+                        linespacing=1.5)
+        
+        # 添加统计信息
+        total_frames = len(self.frame_numbers)
+        active_centers = sum(1 for traj in self.center_trajectories 
+                            if len([p for p in traj if all(not np.isnan(coord) for coord in p)]) > 0)
+        
+        stats_text = f"\n\n统计信息:\n"
+        stats_text += f"总帧数: {total_frames}\n"
+        stats_text += f"活动中心点: {active_centers}/6\n"
+        
+        # 计算平均有效轨迹长度
+        valid_lengths = []
+        for traj in self.center_trajectories:
+            valid_points = [p for p in traj if all(not np.isnan(coord) for coord in p)]
+            if valid_points:
+                valid_lengths.append(len(valid_points))
+        
+        if valid_lengths:
+            avg_length = np.mean(valid_lengths)
+            stats_text += f"平均有效长度: {avg_length:.1f}帧"
+        
+        ax_legend.text(0.1, 0.3, stats_text,
+                        transform=ax_legend.transAxes,
+                        fontsize=10,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
         
         plt.tight_layout()
         
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"轨迹曲线图已保存到: {save_path}")
+            print(f"中心点轨迹曲线图已保存到: {save_path}")
         
         return fig
     
     def plot_2d_trajectory_map(self, save_path=None):
         """
         绘制关键点2D轨迹图（在图像平面上的移动轨迹）
+        现在只绘制6个中心点的轨迹
         """
-        if not any(len(traj) > 0 for traj in self.trajectories):
-            print("没有轨迹数据可绘制")
+        if not any(len(traj) > 0 for traj in self.center_trajectories):
+            print("没有中心点轨迹数据可绘制")
             return
-        
         fig, ax = plt.subplots(figsize=(12, 10))
-        
-        # 绘制每个关键点的轨迹
-        for i in range(self.num_keypoints):
-            if len(self.trajectories[i]) > 0:
-                points = np.array(self.trajectories[i])
+        # 绘制每个中心点的轨迹
+        for i in range(6):
+            if len(self.center_trajectories[i]) > 0:
+                # 过滤掉无效点
+                valid_points = [p for p in self.center_trajectories[i] 
+                                if all(not np.isnan(coord) for coord in p)]
+                if len(valid_points) < 2:
+                    continue
+                
+                points = np.array(valid_points)
                 x = points[:, 0]
                 y = points[:, 1]
                 
@@ -624,58 +768,52 @@ class KeypointTrajectoryTracker:
                 colors = plt.cm.viridis(np.linspace(0, 1, len(x)))
                 
                 # 绘制散点（带颜色渐变）
-                scatter = ax.scatter(x, y, c=colors, s=20, alpha=0.6)
+                scatter = ax.scatter(x, y, c=colors, s=30, alpha=0.6)
                 
                 # 绘制连线
-                ax.plot(x, y, color=self.colors[i]/255, alpha=0.3, linewidth=1)
+                ax.plot(x, y, color=self.center_colors[i]/255, alpha=0.4, linewidth=1.5)
                 
                 # 标记起点和终点
                 ax.scatter(x[0], y[0], color='green', s=100, marker='o', 
-                          label=f'{self.keypoint_names[i]}_start')
+                            label=f'{self.center_names[i]}_起点')
                 ax.scatter(x[-1], y[-1], color='red', s=100, marker='s', 
-                          label=f'{self.keypoint_names[i]}_end')
+                            label=f'{self.center_names[i]}_终点')
         
         # 设置坐标轴
         ax.invert_yaxis()  # 图像坐标系Y轴向下
-        ax.set_title("关键点2D运动轨迹图")
+        ax.set_title("身体中心点2D运动轨迹图", fontsize=14, fontweight='bold')
         ax.set_xlabel("X坐标 (像素)")
         ax.set_ylabel("Y坐标 (像素)")
         ax.grid(True, alpha=0.3)
         
-        # 添加图例（简化）
-        handles, labels = ax.get_legend_handles_labels()
-        unique_labels = {}
-        for handle, label in zip(handles, labels):
-            base_name = label.split('_')[0]
-            if base_name not in unique_labels:
-                unique_labels[base_name] = handle
-        
         # 简化图例显示
-        if len(unique_labels) > 10:
-            # 只显示部分重要关键点
-            important_keys = ['nose', 'left_shoulder', 'right_shoulder', 
-                            'left_hip', 'right_hip', 'left_ankle', 'right_ankle']
-            unique_labels = {k: v for k, v in unique_labels.items() 
-                           if k in important_keys}
+        handles, labels = ax.get_legend_handles_labels()
+        if len(handles) > 10:
+            # 只显示起点和终点图例
+            unique_labels = {}
+            for handle, label in zip(handles, labels):
+                base_name = label.split('_')[0]
+                if base_name not in unique_labels:
+                    unique_labels[base_name] = handle
         
         ax.legend(unique_labels.values(), unique_labels.keys(), 
-                 loc='upper right', fontsize='small')
+                    loc='upper right', fontsize='small')
         
         plt.tight_layout()
         
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"2D轨迹图已保存到: {save_path}")
+            print(f"中心点2D轨迹图已保存到: {save_path}")
         
         return fig
-    
+
     def export_trajectory_data(self, csv_path="trajectory_data.csv"):
-        """导出轨迹数据到CSV文件"""
+        """导出轨迹数据到CSV文件（保持导出17个关键点）"""
         import pandas as pd
-        
         data = []
         for frame_num in self.frame_numbers:
             frame_data = {"frame": frame_num}
+            # 导出17个原始关键点（保持不变）
             for i in range(self.num_keypoints):
                 if len(self.trajectories[i]) > 0:
                     idx = self.frame_numbers.index(frame_num) - (len(self.frame_numbers) - len(self.trajectories[i]))
@@ -683,7 +821,15 @@ class KeypointTrajectoryTracker:
                         x, y = self.trajectories[i][idx]
                         frame_data[f"{self.keypoint_names[i]}_x"] = x
                         frame_data[f"{self.keypoint_names[i]}_y"] = y
-            data.append(frame_data)
+            # # 新增：导出6个中心点数据（可选，如果需要）
+            # for i in range(6):
+            #     if len(self.center_trajectories[i]) > 0:
+            #         idx = self.frame_numbers.index(frame_num) - (len(self.frame_numbers) - len(self.center_trajectories[i]))
+            #         if 0 <= idx < len(self.center_trajectories[i]):
+            #             x, y = self.center_trajectories[i][idx]
+            #             if not (np.isnan(x) or np.isnan(y)):
+            #                 frame_data[f"{self.center_names[i]}_x"] = x
+            #                 frame_data[f"{self.center_names[i]}_y"] = y
         
         df = pd.DataFrame(data)
         df.to_csv(csv_path, index=False)
@@ -693,6 +839,8 @@ class KeypointTrajectoryTracker:
     def clear(self):
         """清除所有轨迹数据"""
         for traj in self.trajectories:
+            traj.clear()
+        for traj in self.center_trajectories:
             traj.clear()
         self.frame_numbers.clear()
         self.current_frame = 0

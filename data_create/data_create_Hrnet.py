@@ -1,3 +1,4 @@
+import sys
 import os
 import cv2
 import numpy as np
@@ -6,8 +7,9 @@ from ultralytics import YOLO
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 import json
-import transforms  
+import transforms 
 from utill import *
+import math  # 添加math模块
 
 # ============================ 核心配置 ============================
 VIDEO_DIR = "video_origin/data_video/use"          
@@ -16,7 +18,7 @@ SAVE_DIR = "video_dataset"
 SAMPLE_FPS = 15                       
 WINDOW_SIZE_LIB = [10,20,30] #不同的窗口大小识别过程不同         
 WINDOW_SIZE = WINDOW_SIZE_LIB[0]                       
-STEP = 15                             
+STEP = 5                             
 CONF_THRESHOLD = 0.5                  
 NORMALIZE = True                      
 TEST_SIZE = 0.2                       
@@ -31,7 +33,7 @@ Key_point_acceleration = []
 Max_acc = []  # 每帧的最大加速度     
 cycle = 0     
 # 新增加速度阈值配置
-ACCELERATION_THRESHOLD = 50.0  # 加速度阈值，可根据实际情况调整
+ACCELERATION_THRESHOLD = 500.0  # 加速度阈值，可根据实际情况调整
 # =================================================================
 
 # 初始化模型
@@ -80,8 +82,42 @@ def detect_person_with_yolo(frame, conf_threshold=0.5):
                     return [float(x1), float(y1), float(x2), float(y2)], conf
     return None, 0
 
+def normalize_pose_coordinates(original_pose):
+    """
+    归一化姿态坐标（基于躯干长度）
+    输入：original_pose - (17, 2) 原始坐标数组
+    输出：normalized_pose - (17, 2) 归一化坐标数组
+    """
+    # 转换为列表格式，方便处理
+    kpts = original_pose.tolist()
+    
+    # 计算肩膀中点（索引5:左肩, 6:右肩）
+    x1 = (kpts[5][0] + kpts[6][0]) / 2
+    y1 = (kpts[5][1] + kpts[6][1]) / 2
+    
+    # 计算髋部中点（索引11:左髋, 12:右髋）
+    x2 = (kpts[11][0] + kpts[12][0]) / 2
+    y2 = (kpts[11][1] + kpts[12][1]) / 2
+    
+    # 计算躯干长度（肩膀中点到髋部中点的距离）
+    torso_length = math.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+    
+    # 避免除零错误
+    if torso_length < 1e-6:
+        torso_length = 1.0
+    
+    # 归一化所有关键点
+    normalized_points = []
+    for i in range(17):
+        # 以髋部为中心，除以躯干长度
+        x_norm = (kpts[i][0] - x2) / torso_length
+        y_norm = (kpts[i][1] - y2) / torso_length
+        normalized_points.append([x_norm, y_norm])
+    
+    return np.array(normalized_points), torso_length
+
 def extract_pose_from_frame(frame):
-    """使用YOLO+HRNet提取17个关键点坐标"""
+    """使用YOLO+HRNet提取17个关键点坐标，额外返回YOLO格式数据"""
     global Key_point_list
     global Key_point_acceleration
     global Max_acc
@@ -93,6 +129,7 @@ def extract_pose_from_frame(frame):
     # 初始化坐标数组
     original_pose = np.zeros((17, 2))  # 原始像素坐标
     norm_pose = np.zeros((17, 2))      # 归一化坐标
+    yolo_keypoints = np.zeros((1, 17, 3), dtype=np.float32)  # YOLO格式: [1, 17, 3]
     
     # 1. 使用YOLO检测人物
     bbox, conf = detect_person_with_yolo(frame, CONF_THRESHOLD)
@@ -100,7 +137,9 @@ def extract_pose_from_frame(frame):
     if bbox is None:
         # 没有检测到人物，返回零值
         Max_acc.append(0.0)  # 记录零加速度
-        return norm_pose.flatten(), original_pose.flatten()
+        # 返回YOLO格式的零值数据
+        yolo_keypoints = np.zeros((1, 17, 3), dtype=np.float32)
+        return norm_pose.flatten(), original_pose.flatten(), yolo_keypoints
     
     # 确保边界框在图像范围内
     x1, y1, x2, y2 = bbox
@@ -121,7 +160,9 @@ def extract_pose_from_frame(frame):
     
     if person_roi.size == 0:
         Max_acc.append(0.0)  # 记录零加速度
-        return norm_pose.flatten(), original_pose.flatten()
+        # 返回YOLO格式的零值数据
+        yolo_keypoints = np.zeros((1, 17, 3), dtype=np.float32)
+        return norm_pose.flatten(), original_pose.flatten(), yolo_keypoints
     
     # 确保图像是RGB格式
     if len(person_roi.shape) == 3:
@@ -178,13 +219,27 @@ def extract_pose_from_frame(frame):
                     orig_x = max(0, min(orig_x, w - 1))
                     orig_y = max(0, min(orig_y, h - 1))
                     
-                    # 保存坐标
+                    # 保存到原始坐标数组
                     original_pose[i] = [orig_x, orig_y]
-                    norm_pose[i] = [orig_x/w, orig_y/h] if NORMALIZE else [orig_x, orig_y]
+                    
+                    # 保存到YOLO格式（归一化坐标 + 置信度）
+                    yolo_keypoints[0, i] = [
+                        orig_x / w,      # 归一化x坐标 (0-1)
+                        orig_y / h,      # 归一化y坐标 (0-1)
+                        float(score_val) # 置信度
+                    ]
+                else:
+                    # 如果没有检测到这个关键点，保存零值和零置信度
+                    yolo_keypoints[0, i] = [0.0, 0.0, 0.0]
+            
+            # 5. 应用归一化（新增部分）
+            normalized_pose, torso_length = normalize_pose_coordinates(original_pose)
+            norm_pose = normalized_pose
+            
     except Exception as e:
         print(f"HRNet处理出错: {e}")
     
-    # 计算加速度
+    # 计算加速度（使用归一化坐标）
     p_pos = norm_pose.tolist()
     current_max_accel = 0.0
     
@@ -209,7 +264,9 @@ def extract_pose_from_frame(frame):
     # 记录当前帧的最大加速度
     Max_acc.append(current_max_accel)
     
-    return norm_pose.flatten(), original_pose.flatten()
+    # 返回三个值：归一化坐标、原始坐标、YOLO格式
+    return norm_pose.flatten(), original_pose.flatten(), yolo_keypoints
+
 
 def draw_keypoints(frame, original_pose, current_max_accel=None):
     """在帧上绘制关键点和骨架，显示加速度信息"""
@@ -428,12 +485,11 @@ def process_single_video(video_path):
         if not ret:
             break
         
-        # 使用YOLO+HRNet提取关键点
-        norm_pose, original_pose = extract_pose_from_frame(frame)
+        # 使用YOLO+HRNet提取关键,增加yolo_keypoints是yolo形式的坐标[[[]]]
+        norm_pose, original_pose,yolo_keypoints = extract_pose_from_frame(frame)
         norm_pose_list.append(norm_pose)
         original_pose_list.append(original_pose)
         frame_list.append(frame)
-    
     cap.release()
     
     if len(norm_pose_list) < WINDOW_SIZE:
@@ -586,9 +642,58 @@ def load_dataset():
     
     return X_train, y_train, X_test, y_test
 
+def check_normalization(dataset_path):
+    """检查数据集是否归一化"""
+    data = np.load(dataset_path)
+    X = data['X']
+    print(f"数据集形状: {X.shape}")
+    print(f"样本数: {X.shape[0]}, 时间步长: {X.shape[1]}, 特征数: {X.shape[2]}")
+    # 检查几个随机样本
+    for i in range(min(5, X.shape[0])):
+        print(f"\n=== 样本 {i} 检查 ===")
+        
+        # 取第一帧
+        frame_data = X[i, 0].reshape(17, 2)
+        # 1. 检查髋部坐标
+        left_hip = frame_data[11]
+        right_hip = frame_data[12]
+        print(f"左髋坐标: [{left_hip[0]:.3f}, {left_hip[1]:.3f}]")
+        print(f"右髋坐标: [{right_hip[0]:.3f}, {right_hip[1]:.3f}]")
+        # 计算髋中心
+        hip_center = [(left_hip[0] + right_hip[0])/2, 
+                    (left_hip[1] + right_hip[1])/2]
+        print(f"髋中心: [{hip_center[0]:.3f}, {hip_center[1]:.3f}]")
+        # 2. 检查坐标范围
+        min_val = np.min(frame_data)
+        max_val = np.max(frame_data)
+        print(f"坐标范围: [{min_val:.2f}, {max_val:.2f}]")
+        # 3. 检查典型值
+        # 肩膀应该在髋部上方约1个单位
+        left_shoulder = frame_data[5]
+        right_shoulder = frame_data[6]
+        shoulder_height = (left_shoulder[1] + right_shoulder[1]) / 2
+        print(f"肩膀相对高度: {shoulder_height:.3f}")
+        # 膝盖应该在髋部下方约1个单位
+        left_knee = frame_data[13]
+        right_knee = frame_data[14]
+        knee_height = (left_knee[1] + right_knee[1]) / 2
+        print(f"膝盖相对高度: {knee_height:.3f}")
+        # 4. 判断是否归一化
+        is_normalized = (
+            abs(hip_center[0]) < 0.1 and  # 髋中心x接近0
+            abs(hip_center[1]) < 0.1 and  # 髋中心y接近0
+            min_val > -3 and max_val < 3   # 坐标范围合理
+        )
+        if is_normalized:
+            print("✅ 坐标已归一化")
+        else:
+            print("❌ 坐标未归一化或有问题")
+        print("-" * 50)
+
 if __name__ == "__main__":
     main()
     # 验证加载
     X_train, y_train, X_test, y_test = load_dataset()
     print(f"\n数据集加载验证：")
     print(f"训练集形状：{X_train.shape} | 标签形状：{y_train.shape}")
+    check_normalization("video_dataset/train.npz")

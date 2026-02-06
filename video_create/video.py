@@ -11,6 +11,15 @@ import numpy as np
 from utill import *
 from collections import deque
 from time_utils import show_time
+from matplotlib import rcParams #字体
+rcParams['font.family'] = 'SimHei'
+
+#创建轨迹生成图像类
+trajectory_tracker = KeypointTrajectoryTracker(
+    num_keypoints=17,
+    history_length=200,  # 保存最近200帧的轨迹
+    output_dir="result/track_img"
+)
 
 time_current = []
 data_buffer = deque(maxlen=50)
@@ -80,6 +89,7 @@ def process_frame(img,preview=True,wait_key=False):
             draw_direct_plot(img,hist_ll ,int(angle_ll), pos=(img.shape[1]-560, 300), label="angle_ll")
             # 获取关键点位置
             p_pos = get_keypoints(list_p)
+            trajectory_tracker.update(p_pos)
             #一级[(x,y)]
             #print (p_pos)
             #每两帧计算一次加速度
@@ -137,7 +147,8 @@ def process_frame(img,preview=True,wait_key=False):
     # print(show_time(start_time,current_time))
     current_frame += 1
     # 绘制骨架
-    draw_select(img,list_p)
+    draw = Draw(img,list_p)
+    draw.draw_select()
     #实时显示
     # if preview:
     #     cv2.imshow('YOLO Detection', img)
@@ -212,6 +223,22 @@ def generate_video(input_path):
     out.release()
     cap.release()
     print('Video saved',output_path)
+
+    # 保存最终的轨迹分析图
+    print("正在生成轨迹分析图...")
+    
+    # 绘制轨迹曲线
+    trajectory_tracker.plot_trajectory_curves(
+        save_path=f"{trajectory_tracker.output_dir}/final_trajectory_curves.png"
+    )
+    trajectory_tracker.plot_2d_trajectory_map(
+        save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
+    )
+    trajectory_tracker.export_trajectory_data(
+        csv_path=f"{trajectory_tracker.output_dir}/trajectory_data.csv"
+    )
+    print('Video saved', output_path)
+    print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
 current_time = time.time()
 print(f"生成视频耗时：{show_time(START_TIME,current_time)}")
 input_path = 'video_origin/data_video/run_woman.mp4'

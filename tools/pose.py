@@ -2,8 +2,7 @@ import ultralytics
 from ultralytics import YOLO
 import cv2
 import numpy as np
-from angle import *
-from utill import *
+from utills.utill import *
 from time_utils import show_time 
 
 # 加载YOLOv11n-pose模型
@@ -46,98 +45,6 @@ l_leg = [11,13,15]
 '''
 #输出对应点坐标
 
-def draw_head(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #鼻子
-    p0=p_pos[0]
-    #左眼
-    p1=p_pos[1]
-    #右眼
-    p2=p_pos[2]
-    #左耳
-    p3=p_pos[3]
-    #右耳
-    p4=p_pos[4]
-    
-    cv2.line(frame,p4,p2,(255,0,0),2)
-    cv2.line(frame,p2,p0,(255,0,0),2)
-    cv2.line(frame,p0,p1,(255,0,0),2)
-    cv2.line(frame,p1,p3,(255,0,0),2)
-
-def draw_body(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #左肩
-    p5=p_pos[5]
-    #右肩
-    p6=p_pos[6]
-    #左肘
-    p7=p_pos[7]
-    #右肘
-    p8=p_pos[8]
-    #左手
-    p9=p_pos[9]
-    #右手
-    p10=p_pos[10]
-    #鼻子
-    p0=p_pos[0]
-    p_m = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
-
-    cv2.line(frame,p10,p8,(103,216,44),2)
-    cv2.line(frame,p8,p6,(103,216,44),2)
-    cv2.line(frame,p6,p5,(103,216,44),2)
-    cv2.line(frame,p5,p7,(103,216,44),2)
-    cv2.line(frame,p7,p9,(103,216,44),2)
-    cv2.line(frame,p0,p_m,(0,0,255),3)
-
-def draw_leg(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #左肩
-    p5=p_pos[5]
-    #右肩
-    p6=p_pos[6]
-    #左髋
-    p11=p_pos[11]
-    #右髋
-    p12=p_pos[12]
-    #左膝
-    p13=p_pos[13]
-    #右膝
-    p14=p_pos[14]
-    #左脚
-    p15=p_pos[15]
-    #右脚
-    p16=p_pos[16]
-    p_u = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
-    p_d = (int((p12[0]+p11[0])/2),int((p12[1]+p11[1])/2))
-    cv2.line(frame,p12,p14,(255,0,220),2)
-    cv2.line(frame,p14,p16,(255,0,220),2)
-    cv2.line(frame,p11,p13,(255,0,220),2)
-    cv2.line(frame,p13,p15,(255,0,220),2)
-    cv2.line(frame,p11,p12,(255,0,220),2)
-    cv2.line(frame,p11,p12,(255,0,220),2)
-    cv2.line(frame,p_u,p_d,(255,0,116),2)
-
-def draw_point(p_pos):
-    for p in p_pos:  
-        circle_center = p
-        # define the radius of the circle
-        radius =5
-        #  Draw a circle using the circle() Function
-        cv2.circle(img, circle_center, radius, (0, 150, 255), thickness=-1, lineType=cv2.LINE_AA) 
-
-def draw_select(frame,list_p,d_h=True,d_b=True,d_l=True,pre=True,d_p=True):
-    if d_h:
-        draw_head(frame,list_p)
-    if d_b:
-        draw_body(frame,list_p)
-    if d_l:
-        draw_leg(frame,list_p)
-    if d_p:
-        p_pos=get_keypoints(list_p)
-        draw_point(p_pos)
-    if pre:
-        predict()
-
 #物体预测
 def predict():
     model = YOLO("./weights/yolo11s.pt")
@@ -176,7 +83,8 @@ def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜�
 if __name__ == "__main__":
     start_time = time.time()
     list_p = process_frame(img_path)
-    draw_select(img,list_p)
+    draw = Draw(img,list_p)
+    draw.draw_select()
     resized = sclae_img(img,80)
     angle_show(list_p,(10,250),(0,0,255),"RightArm",r_arm,resized)
     angle_show(list_p,(10,150),(0,0,255),"LeftArm",l_arm,resized)

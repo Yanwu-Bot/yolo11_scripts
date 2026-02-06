@@ -68,103 +68,88 @@ def draw_direct_plot(img,hist,value, pos=(400, 50), label="Knee"):  #250,120
     cv2.putText(img, f"Max:{maxv}", (x+w-70, y+40), 
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
 
-#画出头部
-def draw_head(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #鼻子
-    p0=p_pos[0]
-    #左眼
-    p1=p_pos[1]
-    #右眼
-    p2=p_pos[2]
-    #左耳
-    p3=p_pos[3]
-    #右耳
-    p4=p_pos[4]
+class Draw():
+    def __init__(self, frame, list_p):
+        self.frame = frame
+        self.list_p = list_p
+        self.p_pose = get_keypoints(self.list_p)
     
-    cv2.line(frame,p4,p2,(255,0,0),2)
-    cv2.line(frame,p2,p0,(255,0,0),2)
-    cv2.line(frame,p0,p1,(255,0,0),2)
-    cv2.line(frame,p1,p3,(255,0,0),2)
+    def draw_head(self):
+        if len(self.p_pose) < 5:
+            return
+        p_pos = self.p_pose
+        p0 = p_pos[0]
+        p1 = p_pos[1]
+        p2 = p_pos[2]
+        p3 = p_pos[3]
+        p4 = p_pos[4]
+        
+        cv2.line(self.frame, p4, p2, (255, 0, 0), 2)
+        cv2.line(self.frame, p2, p0, (255, 0, 0), 2)
+        cv2.line(self.frame, p0, p1, (255, 0, 0), 2)
+        cv2.line(self.frame, p1, p3, (255, 0, 0), 2)
+    
+    def draw_body(self):
+        if len(self.p_pose) < 11:
+            return
+        p_pos = self.p_pose
+        p5 = p_pos[5]
+        p6 = p_pos[6]
+        p7 = p_pos[7]
+        p8 = p_pos[8]
+        p9 = p_pos[9]
+        p10 = p_pos[10]
+        p0 = p_pos[0]
+        
+        p_m = (int((p5[0] + p6[0]) / 2), int((p5[1] + p6[1]) / 2))
 
-#画出身体
-def draw_body(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #左肩
-    p5=p_pos[5]
-    #右肩
-    p6=p_pos[6]
-    #左肘
-    p7=p_pos[7]
-    #右肘
-    p8=p_pos[8]
-    #左手
-    p9=p_pos[9]
-    #右手
-    p10=p_pos[10]
-    #鼻子
-    p0=p_pos[0]
-    p_m = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
+        cv2.line(self.frame, p10, p8, (103, 216, 44), 2)
+        cv2.line(self.frame, p8, p6, (103, 216, 44), 2)
+        cv2.line(self.frame, p6, p5, (103, 216, 44), 2)
+        cv2.line(self.frame, p5, p7, (103, 216, 44), 2)
+        cv2.line(self.frame, p7, p9, (103, 216, 44), 2)
+        cv2.line(self.frame, p0, p_m, (0, 0, 255), 3)
 
-    cv2.line(frame,p10,p8,(103,216,44),2)
-    cv2.line(frame,p8,p6,(103,216,44),2)
-    cv2.line(frame,p6,p5,(103,216,44),2)
-    cv2.line(frame,p5,p7,(103,216,44),2)
-    cv2.line(frame,p7,p9,(103,216,44),2)
-    cv2.line(frame,p0,p_m,(0,0,255),3)
+    def draw_leg(self):
+        if len(self.p_pose) < 17:
+            return
+        p_pos = self.p_pose
+        p5 = p_pos[5]
+        p6 = p_pos[6]
+        p11 = p_pos[11]
+        p12 = p_pos[12]
+        p13 = p_pos[13]
+        p14 = p_pos[14]
+        p15 = p_pos[15]
+        p16 = p_pos[16]
+        
+        p_u = (int((p5[0] + p6[0]) / 2), int((p5[1] + p6[1]) / 2))
+        p_d = (int((p12[0] + p11[0]) / 2), int((p12[1] + p11[1]) / 2))
+        
+        cv2.line(self.frame, p12, p14, (255, 0, 220), 2)
+        cv2.line(self.frame, p14, p16, (255, 0, 220), 2)
+        cv2.line(self.frame, p11, p13, (255, 0, 220), 2)
+        cv2.line(self.frame, p13, p15, (255, 0, 220), 2)
+        cv2.line(self.frame, p11, p12, (255, 0, 220), 2)
+        cv2.line(self.frame, p_u, p_d, (255, 0, 116), 2)
 
-#画出腿部
-def draw_leg(frame,list_p):
-    p_pos = get_keypoints(list_p)
-    #左肩
-    p5=p_pos[5]
-    #右肩
-    p6=p_pos[6]
-    #左髋
-    p11=p_pos[11]
-    #右髋
-    p12=p_pos[12]
-    #左膝
-    p13=p_pos[13]
-    #右膝
-    p14=p_pos[14]
-    #左脚
-    p15=p_pos[15]
-    #右脚
-    p16=p_pos[16]
-    p_u = (int((p5[0]+p6[0])/2),int((p5[1]+p6[1])/2))
-    p_d = (int((p12[0]+p11[0])/2),int((p12[1]+p11[1])/2))
-    cv2.line(frame,p12,p14,(255,0,220),2)
-    cv2.line(frame,p14,p16,(255,0,220),2)
-    cv2.line(frame,p11,p13,(255,0,220),2)
-    cv2.line(frame,p13,p15,(255,0,220),2)
-    cv2.line(frame,p11,p12,(255,0,220),2)
-    cv2.line(frame,p11,p12,(255,0,220),2)
-    cv2.line(frame,p_u,p_d,(255,0,116),2)
-
-#画出关键点
-def draw_point(p_pos,frame):
-    for p in p_pos:  
-        circle_center = p
-        # define the radius of the circle
-        radius =5
-        #  Draw a circle using the circle() Function
-        cv2.circle(frame, circle_center, radius, (0, 150, 255), thickness=-1, lineType=cv2.LINE_AA) 
-
-#选择要显示内容
-def draw_select(frame,list_p,d_h=True,d_b=True,d_l=True,pre=False,d_p=True):  #传入图像，关键点列表，显示头，显示身体，显示腿，显示关键点，预测
-    if d_h:
-        draw_head(frame,list_p)
-    if d_b:
-        draw_body(frame,list_p)
-    if d_l:
-        draw_leg(frame,list_p)
-    if d_p:
-        p_pos=get_keypoints(list_p)
-        draw_point(p_pos,frame)
-    if pre:
-        predict(source=frame)
-
+    def draw_point(self):
+        p_pos = self.p_pose
+        for p in p_pos:
+            circle_center = p
+            radius = 5
+            cv2.circle(self.frame, circle_center, radius, (0, 150, 255), thickness=-1, lineType=cv2.LINE_AA)
+    
+    def draw_select(self, d_h=True, d_b=True, d_l=True, d_p=True):
+        if d_h:
+            self.draw_head()
+        if d_b:
+            self.draw_body()
+        if d_l:
+            self.draw_leg()
+        if d_p:
+            self.draw_point()
+    
 #预测框
 def predict():
     model = YOLO("./weights/yolo11s.pt")
