@@ -1,3 +1,5 @@
+#yolo自带的运动识别
+
 import cv2
 import os
 from ultralytics import solutions

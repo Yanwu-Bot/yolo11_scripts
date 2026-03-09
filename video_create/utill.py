@@ -682,31 +682,31 @@ class KeypointTrajectoryTracker:
         ax_y.legend(loc='upper right', fontsize=10)  # 添加图例
         
         # 在右侧图例区域显示详细信息
-        ax_legend.axis('off')  # 隐藏坐标轴
-        ax_legend.set_title("中心点信息", fontsize=12, fontweight='bold', pad=20)
+        # ax_legend.axis('off')  # 隐藏坐标轴
+        # ax_legend.set_title("中心点信息", fontsize=12, fontweight='bold', pad=20)
         
-        # 创建详细的信息文本
-        info_text = "跟踪的6个中心点:\n\n"
-        for i in range(6):
-            color_hex = '#{:02x}{:02x}{:02x}'.format(
-                int(self.center_colors[i][0]),
-                int(self.center_colors[i][1]),
-                int(self.center_colors[i][2])
-            )
-            trajectory_length = len(self.center_trajectories[i])
-            valid_length = len([p for p in self.center_trajectories[i] 
-                                if all(not np.isnan(coord) for coord in p)])
+        # # 创建详细的信息文本
+        # info_text = "跟踪的6个中心点:\n\n"
+        # for i in range(6):
+        #     color_hex = '#{:02x}{:02x}{:02x}'.format(
+        #         int(self.center_colors[i][0]),
+        #         int(self.center_colors[i][1]),
+        #         int(self.center_colors[i][2])
+        #     )
+        #     trajectory_length = len(self.center_trajectories[i])
+        #     valid_length = len([p for p in self.center_trajectories[i] 
+        #                         if all(not np.isnan(coord) for coord in p)])
             
-            info_text += f"• {self.center_names[i]}:\n"
-            info_text += f"  颜色: {color_hex}\n"
-            info_text += f"  有效点: {valid_length}/{trajectory_length}\n\n"
+        #     info_text += f"• {self.center_names[i]}:\n"
+        #     info_text += f"  颜色: {color_hex}\n"
+        #     info_text += f"  有效点: {valid_length}/{trajectory_length}\n\n"
         
-        # 显示信息文本
-        ax_legend.text(0.1, 0.95, info_text, 
-                        transform=ax_legend.transAxes,
-                        fontsize=9,
-                        verticalalignment='top',
-                        linespacing=1.5)
+        # # 显示信息文本
+        # ax_legend.text(0.1, 0.95, info_text, 
+        #                 transform=ax_legend.transAxes,
+        #                 fontsize=9,
+        #                 verticalalignment='top',
+        #                 linespacing=1.5)
         
         # 添加统计信息
         total_frames = len(self.frame_numbers)
@@ -808,32 +808,43 @@ class KeypointTrajectoryTracker:
         return fig
 
     def export_trajectory_data(self, csv_path="trajectory_data.csv"):
-        """导出轨迹数据到CSV文件（保持导出17个关键点）"""
+        """导出轨迹数据到CSV文件（简化版本）"""
         import pandas as pd
         data = []
-        for frame_num in self.frame_numbers:
-            frame_data = {"frame": frame_num}
-            # 导出17个原始关键点（保持不变）
-            for i in range(self.num_keypoints):
-                if len(self.trajectories[i]) > 0:
-                    idx = self.frame_numbers.index(frame_num) - (len(self.frame_numbers) - len(self.trajectories[i]))
-                    if 0 <= idx < len(self.trajectories[i]):
-                        x, y = self.trajectories[i][idx]
-                        frame_data[f"{self.keypoint_names[i]}_x"] = x
-                        frame_data[f"{self.keypoint_names[i]}_y"] = y
-            # # 新增：导出6个中心点数据（可选，如果需要）
-            # for i in range(6):
-            #     if len(self.center_trajectories[i]) > 0:
-            #         idx = self.frame_numbers.index(frame_num) - (len(self.frame_numbers) - len(self.center_trajectories[i]))
-            #         if 0 <= idx < len(self.center_trajectories[i]):
-            #             x, y = self.center_trajectories[i][idx]
-            #             if not (np.isnan(x) or np.isnan(y)):
-            #                 frame_data[f"{self.center_names[i]}_x"] = x
-            #                 frame_data[f"{self.center_names[i]}_y"] = y
         
+        # 获取最长轨迹长度
+        max_length = max(len(traj) for traj in self.trajectories if traj)
+        if max_length == 0:
+            print("警告：没有轨迹数据可导出")
+            return None
+        
+        # 按帧索引遍历
+        for frame_idx in range(max_length):
+            frame_data = {"frame": frame_idx + 1}  # 帧号从1开始
+            
+            # 导出17个原始关键点
+            for i in range(self.num_keypoints):
+                if frame_idx < len(self.trajectories[i]):
+                    point = self.trajectories[i][frame_idx]
+                    if not (np.isnan(point[0]) or np.isnan(point[1])):
+                        frame_data[f"{self.keypoint_names[i]}_x"] = point[0]
+                        frame_data[f"{self.keypoint_names[i]}_y"] = point[1]
+            
+            # 导出6个中心点
+            for i in range(6):
+                if frame_idx < len(self.center_trajectories[i]):
+                    point = self.center_trajectories[i][frame_idx]
+                    if not (np.isnan(point[0]) or np.isnan(point[1])):
+                        frame_data[f"{self.center_names[i]}_x"] = point[0]
+                        frame_data[f"{self.center_names[i]}_y"] = point[1]
+            
+            data.append(frame_data)
+        
+        # 保存CSV
         df = pd.DataFrame(data)
         df.to_csv(csv_path, index=False)
-        print(f"轨迹数据已导出到: {csv_path}")
+        print(f"轨迹数据已导出到: {csv_path}, 共 {len(df)} 帧")
+        
         return df
     
     def clear(self):

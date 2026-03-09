@@ -1,3 +1,5 @@
+#结合了YOLO人体识别和HRnet姿态检测的视频生成代码,生成耗时更少
+
 import os
 import json
 import torch
@@ -14,6 +16,16 @@ from collections import deque
 from time_utils import show_time
 from ultralytics import YOLO  # 添加YOLO库
 import sys
+from matplotlib import rcParams #字体
+rcParams['font.family'] = 'SimHei'
+
+trajectory_tracker = KeypointTrajectoryTracker(
+    num_keypoints=17,
+    history_length=200,  # 保存最近200帧的轨迹
+    output_dir="result/track_img"
+)
+
+
 time_current = []
 data_buffer = deque(maxlen=50)
 weight = [1,1,1,0,0,0]
@@ -50,26 +62,26 @@ def init_models():
         #初始化YOLO模型
         try:
             yolo_model = YOLO('weights\yolo11n.pt')  # 会自动下载
-            print("✅ YOLO模型加载成功")
+            print("YOLO模型加载成功")
         except Exception as e:
-            print(f"❌ YOLO模型加载失败: {e}")
+            print(f"YOLO模型加载失败: {e}")
             return False
         #初始化HRNet模型
         weights_path = "HRnet\\pytorch\\pose_coco\\pose_hrnet_w32_256x192.pth"
         keypoint_json_path = "HRnet\\person_keypoints.json"
         # 确保路径存在
         if not os.path.exists(weights_path):
-            print(f"❌ HRNet权重文件不存在: {weights_path}")
+            print(f"HRNet权重文件不存在: {weights_path}")
             return False
         if not os.path.exists(keypoint_json_path):
-            print(f"❌ 关键点JSON文件不存在: {keypoint_json_path}")
+            print(f"关键点JSON文件不存在: {keypoint_json_path}")
             return False
         # read json file
         try:
             with open(keypoint_json_path, "r") as f:
                 person_info = json.load(f)
         except Exception as e:
-            print(f"❌ 加载JSON文件错误: {e}")
+            print(f"加载JSON文件错误: {e}")
             return False
         try:
             # create model
@@ -231,6 +243,7 @@ def process_frame(img,preview=True):
     angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
     angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
     p_pos = get_keypoints(list_p)
+    trajectory_tracker.update(p_pos) 
     p13 = p_pos[13]
     p14 = p_pos[14]
     p15 = p_pos[15]
@@ -251,7 +264,8 @@ def process_frame(img,preview=True):
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
     current_frame += 1
-    draw_select(img, list_p)
+    draw = Draw(img,list_p)
+    draw.draw_select()
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
@@ -273,7 +287,7 @@ def generate_video(input_path):
     # 重置到视频开头
     cap = cv2.VideoCapture(input_path)
     # 生成视频
-    out, output_path, cap = video_out(input_path, 'video_origin/result_video/', 'yolo_hrnet-')
+    out, output_path, cap = video_out(input_path, 'result/result_video/video/', 'yolo_hrnet-')
     if out is None:
         print("无法创建视频输出")
         return
@@ -308,6 +322,17 @@ def generate_video(input_path):
             cap.release()
         print('\n视频处理完成')
         print('Video saved to:', output_path)
+    # 绘制轨迹曲线
+    trajectory_tracker.plot_trajectory_curves(
+        save_path=f"{trajectory_tracker.output_dir}/hr_final_trajectory_curves.png"
+    )
+    # trajectory_tracker.plot_2d_trajectory_map(
+    #     save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
+    # )
+    trajectory_tracker.export_trajectory_data(
+        csv_path=f"{trajectory_tracker.output_dir}/hr_trajectory_data.csv"
+    )
+    print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
@@ -329,7 +354,7 @@ def change_detector(a,b):
 
 
 if __name__ == '__main__':
-    input_path = 'video_origin/data_video/run_woman2.mp4'
+    input_path = 'video_origin/data_video/run_man.mp4'
     START_TIME = time.time()
     generate_video(input_path)
     current_time = time.time()

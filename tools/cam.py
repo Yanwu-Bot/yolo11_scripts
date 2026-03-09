@@ -1,9 +1,11 @@
+#摄像头实时检测动作
+
 import ultralytics
 from ultralytics import YOLO
 import cv2
 import time
 import numpy as np
-from angle import *
+from utill import *
 
 r_arm = [6,8,10]
 l_arm = [5,7,9]

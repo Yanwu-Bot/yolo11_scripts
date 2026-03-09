@@ -1,3 +1,5 @@
+#用于图片检测当前动作
+
 import ultralytics
 from ultralytics import YOLO
 import cv2

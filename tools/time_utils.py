@@ -1,3 +1,5 @@
+#时间显示函数，用于精确显示运行时间
+
 import time
 
 start_time = time.time()

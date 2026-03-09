@@ -1,4 +1,5 @@
 #mpose 效果最好，n以上帧数会下降
+#导入模型进行识别生成视频及数据
 
 from run_test import *
 import matplotlib.pyplot as plt
@@ -35,12 +36,12 @@ score = 0
 step_fres = 0
 frame_count = 0
 gap = 0
+START_TIME = time.time()
 #24帧每秒
 VIDEO_FRAME_SPEED = 24
 #每帧时间
 TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
 current_frame = 1 
-START_TIME = time.time()
 Key_point_list = []
 Key_point_acceleration = []
 
@@ -83,10 +84,11 @@ def process_frame(img,preview=True,wait_key=False):
             angle_la = angle_show(list_p, (10,40), (0,0,255), "LeftArm", l_arm, img)
             angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
             angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
-            draw_direct_plot(img,hist_ra ,int(angle_ra), pos=(img.shape[1]-280, 50), label="angle_ra")
-            draw_direct_plot(img,hist_la ,int(angle_la), pos=(img.shape[1]-280, 300), label="angle_la")
-            draw_direct_plot(img,hist_rl ,int(angle_rl), pos=(img.shape[1]-560, 50), label="angle_rl")
-            draw_direct_plot(img,hist_ll ,int(angle_ll), pos=(img.shape[1]-560, 300), label="angle_ll")
+            #实时角度变化
+            # draw_direct_plot(img,hist_ra ,int(angle_ra), pos=(img.shape[1]-280, 50), label="angle_ra")
+            # draw_direct_plot(img,hist_la ,int(angle_la), pos=(img.shape[1]-280, 300), label="angle_la")
+            # draw_direct_plot(img,hist_rl ,int(angle_rl), pos=(img.shape[1]-560, 50), label="angle_rl")
+            # draw_direct_plot(img,hist_ll ,int(angle_ll), pos=(img.shape[1]-560, 300), label="angle_ll")
             # 获取关键点位置
             p_pos = get_keypoints(list_p)
             trajectory_tracker.update(p_pos)
@@ -200,7 +202,7 @@ def generate_video(input_path):
     cap.release()
     print('视频总帧数：',frame_count)
     #生成视频
-    out,output_path,cap = video_out(input_path,'video_origin/result_video/','out-') 
+    out,output_path,cap = video_out(input_path,'result/result_video/video/','out-') 
     try:
         while(cap.isOpened()):
             success,frame = cap.read()
@@ -224,23 +226,22 @@ def generate_video(input_path):
     cap.release()
     print('Video saved',output_path)
 
-    # 保存最终的轨迹分析图
-    print("正在生成轨迹分析图...")
-    
     # 绘制轨迹曲线
     trajectory_tracker.plot_trajectory_curves(
         save_path=f"{trajectory_tracker.output_dir}/final_trajectory_curves.png"
     )
-    trajectory_tracker.plot_2d_trajectory_map(
-        save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
-    )
+    # trajectory_tracker.plot_2d_trajectory_map(
+    #     save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
+    # )
     trajectory_tracker.export_trajectory_data(
         csv_path=f"{trajectory_tracker.output_dir}/trajectory_data.csv"
     )
     print('Video saved', output_path)
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
-current_time = time.time()
-print(f"生成视频耗时：{show_time(START_TIME,current_time)}")
-input_path = 'video_origin/data_video/run_woman.mp4'
-generate_video(input_path)
-print(step)
+
+if __name__ == '__main__':    
+    input_path = 'video_origin/data_video/run_man.mp4'
+    generate_video(input_path)
+    current_time = time.time()
+    print(f"生成视频耗时：{show_time(START_TIME,current_time)}")
+    print(step)
