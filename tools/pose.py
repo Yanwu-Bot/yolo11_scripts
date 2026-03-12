@@ -4,8 +4,10 @@ import ultralytics
 from ultralytics import YOLO
 import cv2
 import numpy as np
-from utills.utill import *
+from utill import *
+from Feature import *
 from time_utils import show_time 
+import math
 
 # 加载YOLOv11n-pose模型
 model = YOLO("./weights/yolo11n-pose.pt")
@@ -85,13 +87,24 @@ def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜�
 if __name__ == "__main__":
     start_time = time.time()
     list_p = process_frame(img_path)
+    p_pos = get_keypoints(list_p)
     draw = Draw(img,list_p)
     draw.draw_select()
     resized = sclae_img(img,80)
-    angle_show(list_p,(10,250),(0,0,255),"RightArm",r_arm,resized)
-    angle_show(list_p,(10,150),(0,0,255),"LeftArm",l_arm,resized)
-    angle_show(list_p,(10,200),(0,0,255),"RightLeg",r_leg,resized)
-    angle_show(list_p,(10,100),(0,0,255),"LeftLeg",l_leg,resized)
+    feature = Feature(p_pos)
+    img_feature = feature.get_all_features()
+    print("各个夹角：")
+    print(img_feature[:15])
+    print("中心点坐标：")
+    print(img_feature[15:19])
+    print("朝向特征：")
+    print(img_feature[19:23])
+    print("四肢协调：")
+    print(img_feature[23:27])   
+    # angle_show(list_p,(10,250),(0,0,255),"RightArm",r_arm,resized)
+    # angle_show(list_p,(10,150),(0,0,255),"LeftArm",l_arm,resized)
+    # angle_show(list_p,(10,200),(0,0,255),"RightLeg",r_leg,resized)
+    # angle_show(list_p,(10,100),(0,0,255),"LeftLeg",l_leg,resized)
     cv2.imshow("Image Window", resized)
     current_time = time.time()
     print(show_time(start_time,current_time))

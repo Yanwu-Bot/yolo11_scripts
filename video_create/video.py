@@ -15,6 +15,10 @@ from time_utils import show_time
 from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
+#视频输入地址
+input_path = 'video_origin/data_video/run_man.mp4'
+video_name = os.path.splitext(os.path.basename(input_path))[0]
+
 #创建轨迹生成图像类
 trajectory_tracker = KeypointTrajectoryTracker(
     num_keypoints=17,
@@ -31,19 +35,17 @@ l_arm = [5,7,9]
 r_leg = [12,14,16]
 l_leg = [11,13,15]
 i = 0
-cycles = 0 
-score = 0
-step_fres = 0
-frame_count = 0
-gap = 0
-START_TIME = time.time()
-#24帧每秒
-VIDEO_FRAME_SPEED = 24
-#每帧时间
-TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
-current_frame = 1 
-Key_point_list = []
-Key_point_acceleration = []
+score = 0        
+step_fres = 0                            #步频           
+frame_count = 0                          #记录当前第几帧
+gap = 0          
+START_TIME = time.time()                 #系统开始时间
+VIDEO_FRAME_SPEED = 24                   #视频24帧每秒
+TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)  #每帧时间
+current_frame = 1                        #当前帧数
+Key_point_list = []                      #用于存放当前帧关键点
+Key_point_acceleration = []              #用于存放当前所有关键点的加速度
+Max_acc = []                             #最大加速度总列表
 
 model = YOLO("./weights/yolo11l-pose.pt")
 
@@ -64,14 +66,12 @@ def process_frame(img,preview=True,wait_key=False):
     results = model(img_RGB)
     #预测单帧状态
     #process_single_image(img)
-    global cycles
     global current_frame
     global i
     global step_fres
     global score
     global gap
     #循环次数
-    cycles += 1
     for result in results:
         keypoints = result.keypoints
         for p in keypoints:
@@ -95,18 +95,21 @@ def process_frame(img,preview=True,wait_key=False):
             #一级[(x,y)]
             #print (p_pos)
             #每两帧计算一次加速度
-            if cycles % 2 == 0:
+            if frame_count % 2 == 0:
                 Key_point_acceleration.clear()
                 #如果列表为空
                 if not Key_point_list:
                     for j in range(17):
                         Key_point_list.append(p_pos[j])
                 else:
+                    #用当前数据和上一帧保存的数据求加速度
                     for j in range(17):
                         Key_point_acceleration.append(acceleration(p_pos[j],Key_point_list[j],TIME_GAP))
                     Key_point_list.clear()
+                    #传入这一帧的数据供下次使用
                     for j in range(17):
                         Key_point_list.append(p_pos[j])
+            Max_acc.append(max(Key_point_acceleration)/1000)
             print(max(Key_point_acceleration))
         
             # ratios, abnormal_flags = limb_calculation(p_pos)
@@ -130,7 +133,7 @@ def process_frame(img,preview=True,wait_key=False):
                     if gap > 0.1:
                         step_fres = round(1/gap,3)
             #显示起步角度
-            show_start(img,angle1,angle2)  
+            # show_start(img,angle1,angle2)  
             #显示步频
             cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
@@ -239,8 +242,17 @@ def generate_video(input_path):
     print('Video saved', output_path)
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
 
+    #绘制加速度散点图
+    frames = list(range(3,frame_count + 1))
+    # print(frame_count)
+    # print("加速度数据：")
+    # print(len(Max_acc))
+    point_acceleration(frames,Max_acc,video_name)
+    eps = auto_eps(Max_acc,3)
+    print(f"当前自动eps为{eps}")
+    point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=3)
+
 if __name__ == '__main__':    
-    input_path = 'video_origin/data_video/run_man.mp4'
     generate_video(input_path)
     current_time = time.time()
     print(f"生成视频耗时：{show_time(START_TIME,current_time)}")

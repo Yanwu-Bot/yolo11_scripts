@@ -1,3 +1,5 @@
+#跑步姿势训练模型
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,7 +14,6 @@ SAVE_DIR = "run_posture_model"
 os.makedirs(SAVE_DIR, exist_ok=True)
 save_path = os.path.join(SAVE_DIR, 'resnet18_run_posture.pth')
 # ==================== 1. 加载数据 ====================
-print("加载数据...")
 train_data = np.load("run_posture_dataset/train.npz")
 test_data = np.load("run_posture_dataset/test.npz")
 

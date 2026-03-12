@@ -1,4 +1,4 @@
-#读取npz
+#读取npz数据
 import numpy as np
 
 a = np.load("video_dataset/train.npz")

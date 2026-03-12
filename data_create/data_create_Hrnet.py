@@ -428,7 +428,7 @@ def manual_label_frames(video_path, norm_pose_seq, original_pose_seq, frame_list
                 cv2.destroyAllWindows()
                 labels = np.array(labels, dtype=int)
                 np.savetxt(label_save_path, labels, fmt="%d")
-                print(f"✅ 标注完成：{label_save_path} | 正常={np.sum(labels==0)}, 异常={np.sum(labels==1)}")
+                print(f"标注完成：{label_save_path} | 正常={np.sum(labels==0)}, 异常={np.sum(labels==1)}")
                 return labels
             elif key == 32:  # 空格键
                 pause = True
@@ -685,9 +685,9 @@ def check_normalization(dataset_path):
             min_val > -3 and max_val < 3   # 坐标范围合理
         )
         if is_normalized:
-            print("✅ 坐标已归一化")
+            print("坐标已归一化")
         else:
-            print("❌ 坐标未归一化或有问题")
+            print("坐标未归一化或有问题")
         print("-" * 50)
 
 if __name__ == "__main__":

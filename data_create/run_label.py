@@ -1,4 +1,5 @@
-#生产数据集
+#生成跑姿相关数据集
+
 import os
 import cv2
 import numpy as np

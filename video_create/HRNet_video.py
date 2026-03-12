@@ -9,7 +9,7 @@ from HRNet_model import HighResolutionNet
 import transforms
 from run_test import *
 from tqdm import tqdm
-import time
+import time    
 import cv2
 from utill import *
 from collections import deque
@@ -18,6 +18,10 @@ from ultralytics import YOLO  # 添加YOLO库
 import sys
 from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
+
+#视频输入地址
+input_path = 'video_origin/data_video/run_man.mp4'
+video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
     num_keypoints=17,
@@ -38,12 +42,14 @@ step_count = 0  # 改为step_count，避免与循环变量i冲突
 score = 0
 step_fres = 0
 frame_count = 0
-gap = 0
 #24帧每秒
 VIDEO_FRAME_SPEED = 24
 TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
 current_frame = 1 
 START_TIME = time.time()
+Key_point_list = []                      #用于存放当前帧关键点
+Key_point_acceleration = []              #用于存放当前所有关键点的加速度
+Max_acc = []                             #最大加速度总列表
 
 # 全局变量用于模型，避免重复加载
 device = None
@@ -91,9 +97,9 @@ def init_models():
             hrnet_model.load_state_dict(weights)
             hrnet_model.to(device)
             hrnet_model.eval()
-            print("✅ HRNet模型加载成功")
+            print("HRNet模型加载成功")
         except Exception as e:
-            print(f"❌ HRNet模型加载错误: {e}")
+            print(f"HRNet模型加载错误: {e}")
             return False
         # 3. 初始化数据转换
         resize_hw = (256, 192)
@@ -102,7 +108,7 @@ def init_models():
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        print("✅ 所有模型初始化完成")
+        print("所有模型初始化完成")
     return True
 
 def detect_person_with_yolo(frame, conf_threshold=0.5):
@@ -134,7 +140,7 @@ def predict_frame(frame):
         if not init_models():
             return [[]], []
     
-    # 1. 使用YOLO检测人物
+    # 使用YOLO检测人物，bbox为框坐标
     bbox, conf = detect_person_with_yolo(frame, conf_threshold=0.5)
     
     if bbox is None:
@@ -144,6 +150,7 @@ def predict_frame(frame):
     # 确保边界框在图像范围内
     height, width = frame.shape[:2]
     x1, y1, x2, y2 = bbox
+    #超出边界的框返回图像内
     x1 = max(0, min(x1, width - 1))
     y1 = max(0, min(y1, height - 1))
     x2 = max(0, min(x2, width - 1))
@@ -152,7 +159,7 @@ def predict_frame(frame):
     
     # 在图像上绘制YOLO检测框（绿色）
     cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), 
-                    (0, 0, 255), 2)
+                    (0, 255, 0), 2)
     cv2.putText(frame, f"Person: {conf:.2f}", 
                 (int(x1), max(20, int(y1) - 10)), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -232,7 +239,7 @@ def predict_frame(frame):
 
 def process_frame(img,preview=True):
     """处理视频帧"""
-    global current_frame, step_count, step_fres, score, gap, time_current
+    global current_frame, step_count, step_fres, score, time_current
     # 预测单帧状态
     # process_single_image(img) 
     list_p, scores = predict_frame(img)
@@ -244,15 +251,37 @@ def process_frame(img,preview=True):
     angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
     p_pos = get_keypoints(list_p)
     trajectory_tracker.update(p_pos) 
+
+    #----------加速度-------------
+    Key_point_acceleration.clear()
+    #如果列表为空
+    if not Key_point_list:
+        for j in range(17):
+            Key_point_list.append(p_pos[j])
+    else:
+        #用当前数据和上一帧保存的数据求加速度
+        for j in range(17):
+            Key_point_acceleration.append(acceleration(p_pos[j],Key_point_list[j],TIME_GAP))
+        Key_point_list.clear()
+        #传入这一帧的数据供下次使用
+        for j in range(17):
+            Key_point_list.append(p_pos[j])
+    Max_acc.append(max(Key_point_acceleration)/1000)
+    #----------------------------
+
     p13 = p_pos[13]
     p14 = p_pos[14]
     p15 = p_pos[15]
     p16 = p_pos[16]
     if change_detector(p15, p16):
             step_count += 1
+            #把当前帧数添加进列表
             time_current.append(current_frame)
+            #如果步数大于2步即出现可以计算步频
             if step_count > 2 :
+                #每步时间差
                 gap = ((time_current[-1]-time_current[-2]) * TIME_GAP)
+                #步频=1/时间 
                 if gap > 0.1:
                     step_fres = round(1/gap,3)
 
@@ -324,15 +353,20 @@ def generate_video(input_path):
         print('Video saved to:', output_path)
     # 绘制轨迹曲线
     trajectory_tracker.plot_trajectory_curves(
-        save_path=f"{trajectory_tracker.output_dir}/hr_final_trajectory_curves.png"
+        save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
     )
     # trajectory_tracker.plot_2d_trajectory_map(
     #     save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
     # )
     trajectory_tracker.export_trajectory_data(
-        csv_path=f"{trajectory_tracker.output_dir}/hr_trajectory_data.csv"
+        csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
     )
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
+    frames = list(range(2,frame_count + 1))
+    print(len(Max_acc))
+    eps = auto_eps(Max_acc,3)
+    print(f"当前自动eps为{eps}")
+    wrong_point = point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=8)
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
@@ -354,7 +388,6 @@ def change_detector(a,b):
 
 
 if __name__ == '__main__':
-    input_path = 'video_origin/data_video/run_man.mp4'
     START_TIME = time.time()
     generate_video(input_path)
     current_time = time.time()
