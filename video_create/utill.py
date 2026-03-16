@@ -12,6 +12,7 @@ from math import sqrt, acos, degrees
 import math
 import time
 from sklearn.cluster import DBSCAN
+from sklearn.neighbors import NearestNeighbors
 import heapq
 
 hist_ra= deque(maxlen=50)  # 右臂
@@ -367,30 +368,41 @@ def calculate_angle(point_a, point_b, point_c):
     :param point_a: 点A的坐标 (x, y)
     :param point_b: 点B的坐标 (x, y)
     :param point_c: 点C的坐标 (x, y)
-    :return: 角度（度数）
+    :return: 角度（度数），如果无法计算返回0
     """
-    # 创建向量BA和BC
-    ba = (point_a[0] - point_b[0], point_a[1] - point_b[1])
-    bc = (point_c[0] - point_b[0], point_c[1] - point_b[1])
-    
-    # 计算点积
-    dot_product = ba[0] * bc[0] + ba[1] * bc[1]
-    
-    # 计算向量模长
-    magnitude_ba = math.sqrt(ba[0]**2 + ba[1]**2)
-    magnitude_bc = math.sqrt(bc[0]**2 + bc[1]**2)
-    
-    # 计算余弦值
-    cos_angle = dot_product / (magnitude_ba * magnitude_bc)
-    
-    # 防止浮点数精度问题导致的值超出[-1, 1]范围
-    cos_angle = max(min(cos_angle, 1), -1)
-    
-    # 计算角度（弧度）并转换为度数
-    angle_rad = math.acos(cos_angle)
-    angle_deg = math.degrees(angle_rad)
-    
-    return angle_deg
+    try:
+        # 创建向量BA和BC
+        ba = (point_a[0] - point_b[0], point_a[1] - point_b[1])
+        bc = (point_c[0] - point_b[0], point_c[1] - point_b[1])
+        
+        # 计算向量模长
+        magnitude_ba = math.sqrt(ba[0]**2 + ba[1]**2)
+        magnitude_bc = math.sqrt(bc[0]**2 + bc[1]**2)
+        
+        # 检查是否有零向量（点重合）
+        if magnitude_ba < 1e-6 or magnitude_bc < 1e-6:
+            # 如果两点重合，角度无法定义，返回0
+            return 0.0
+        
+        # 计算点积
+        dot_product = ba[0] * bc[0] + ba[1] * bc[1]
+        
+        # 计算余弦值
+        cos_angle = dot_product / (magnitude_ba * magnitude_bc)
+        
+        # 防止浮点数精度问题导致的值超出[-1, 1]范围
+        cos_angle = max(min(cos_angle, 1), -1)
+        
+        # 计算角度（弧度）并转换为度数
+        angle_rad = math.acos(cos_angle)
+        angle_deg = math.degrees(angle_rad)
+        
+        return angle_deg
+        
+    except (ZeroDivisionError, ValueError, TypeError) as e:
+        # 任何错误都返回0
+        print(f"角度计算错误: {e}")
+        return 0.0
 
 #根据位置差计算加速度
 def acceleration(current_point, previous_point, time_gap):
@@ -896,26 +908,20 @@ def point_acceleration(frames, acceleration, name, use_dbscan=False, eps=0.5, mi
 #自动生成DBSCAN的eps
 def auto_eps(acc_list, min_samples=3):
     """
-    最简单的版本：直接返回推荐的eps值
+    论文Algorithm 1中的方法
     """
-    #对源列表排序``
-    result = []
+    # 转为二维数组
+    X = np.array(acc_list).reshape(-1, 1)
+    # 计算k-distance
+    neighbors = NearestNeighbors(n_neighbors=min_samples)
+    neighbors.fit(X)
+    distances, _ = neighbors.kneighbors(X)
     
-    for i, target in enumerate(acc_list):
-        # 计算每个数与目标值的距离，排除自身
-        distances = [(abs(x - target), x) for j, x in enumerate(acc_list) if j != i]
-        # 按距离排序，取最近的3个
-        closest_three = sorted(distances)[:min_samples]
-        # 从这3个中找出最大的数
-        max_value = max(x for _, x in closest_three) 
-        result.append(max_value)
-    #从大到小对其排序
-    list_sort = sorted(result)
-    max_diff = 0
-    eps = 0
-    for i in range(len(list_sort)-1):
-        diff = list_sort[i+1] - list_sort[i]
-        if diff > max_diff:
-            max_diff = diff
-            eps = list_sort[i]
-    return eps/4
+    # 取第k近的距离
+    k_dist = np.sort(distances[:, -1])
+    
+    # 找斜率最大点（拐点）
+    slopes = np.diff(k_dist)
+    eps_idx = np.argmax(slopes)
+    eps = k_dist[eps_idx]
+    return eps

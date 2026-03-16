@@ -16,11 +16,12 @@ from collections import deque
 from time_utils import show_time
 from ultralytics import YOLO  # 添加YOLO库
 import sys
+from Feature import *
 from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/run_man.mp4'
+input_path = 'video_origin/data_video/use/run_man.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
@@ -28,7 +29,6 @@ trajectory_tracker = KeypointTrajectoryTracker(
     history_length=200,  # 保存最近200帧的轨迹
     output_dir="result/track_img"
 )
-
 
 time_current = []
 data_buffer = deque(maxlen=50)
@@ -50,6 +50,7 @@ START_TIME = time.time()
 Key_point_list = []                      #用于存放当前帧关键点
 Key_point_acceleration = []              #用于存放当前所有关键点的加速度
 Max_acc = []                             #最大加速度总列表
+All_feature = []                         #用于存放特征
 
 # 全局变量用于模型，避免重复加载
 device = None
@@ -250,7 +251,8 @@ def process_frame(img,preview=True):
     angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
     angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
     p_pos = get_keypoints(list_p)
-    trajectory_tracker.update(p_pos) 
+    trajectory_tracker.update(p_pos) #更新轨迹
+    feature = Feature(p_pos)         #获取关键特征
 
     #----------加速度-------------
     Key_point_acceleration.clear()
@@ -278,12 +280,21 @@ def process_frame(img,preview=True):
             #把当前帧数添加进列表
             time_current.append(current_frame)
             #如果步数大于2步即出现可以计算步频
-            if step_count > 2 :
-                #每步时间差
-                gap = ((time_current[-1]-time_current[-2]) * TIME_GAP)
-                #步频=1/时间 
-                if gap > 0.1:
-                    step_fres = round(1/gap,3)
+            if step_count > 2:
+                # 确保time_current至少有两个不同的值
+                if len(time_current) >= 2 and time_current[-1] > time_current[-2]:
+                    # 每步时间差
+                    frame_diff = time_current[-1] - time_current[-2]
+                    gap = frame_diff * TIME_GAP
+                    # 步频 = 1/时间
+                    if gap > 0.1:  # 同时确保gap不为0
+                        step_fres = round(1/gap, 3)
+                    else:
+                        # 如果gap太小或为0，保持之前的步频
+                        pass  # step_fres保持不变
+                else:
+                    # 帧差无效，保持之前的步频
+                    pass
 
     cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
     fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
@@ -295,10 +306,12 @@ def process_frame(img,preview=True):
     current_frame += 1
     draw = Draw(img,list_p)
     draw.draw_select()
+    feature_frame = feature.get_all_features()       #获取当前帧的所有特征
+    feature_frame.append(step_fres)                  #特征增加步频
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
-    return img, list_p
+    return img, list_p, feature_frame
 
 def generate_video(input_path):
     """生成处理后的视频"""
@@ -312,7 +325,7 @@ def generate_video(input_path):
             break
         frame_count += 1
     cap.release()
-    print('视频总帧数：', frame_count)
+    print('视频总帧数：', frame_count-1)
     # 重置到视频开头
     cap = cv2.VideoCapture(input_path)
     # 生成视频
@@ -328,9 +341,9 @@ def generate_video(input_path):
                 break
             frame_index += 1
             try:
-                processed_frame, list_p = process_frame(frame)
-                # 绘制关键点（使用你的draw_select函数）
-                out.write(processed_frame)
+                processed_frame, list_p, feature_frame = process_frame(frame)
+                All_feature.append(feature_frame)         #把每一帧特征添加到总列表中
+                out.write(processed_frame)                #绘制关键点（使用你的draw_select函数）
                 print(f"处理第 {frame_index}/{frame_count} 帧", end='\r')
                 progress_bar(frame_index,frame_count)
             except Exception as e:
@@ -361,12 +374,16 @@ def generate_video(input_path):
     trajectory_tracker.export_trajectory_data(
         csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
     )
+
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
     frames = list(range(2,frame_count + 1))
     print(len(Max_acc))
     eps = auto_eps(Max_acc,3)
     print(f"当前自动eps为{eps}")
-    wrong_point = point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=8)
+    wrong_point = point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=3)
+    features_array = np.array(All_feature)
+    print(features_array.shape)
+    np.save(f'result/features/{video_name}_features.npy', features_array)
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
@@ -393,3 +410,4 @@ if __name__ == '__main__':
     current_time = time.time()
     print(f"生成视频总耗时：{show_time(START_TIME, current_time)}")
     print(f"步数: {step_count}")
+    # print(All_feature)
