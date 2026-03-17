@@ -854,8 +854,8 @@ def point_acceleration(frames, acceleration, name, use_dbscan=False, eps=0.5, mi
         
         # 预定义颜色列表（足够多颜色）
         colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 
-                 'pink', 'gray', 'olive', 'cyan', 'magenta', 'yellow',
-                 'lime', 'teal', 'lavender', 'beige', 'maroon', 'navy']
+                    'pink', 'gray', 'olive', 'cyan', 'magenta', 'yellow',
+                    'lime', 'teal', 'lavender', 'beige', 'maroon', 'navy']
         
         # 为每个聚类绘制点
         for i, k in enumerate(sorted(unique_labels)):
@@ -863,15 +863,15 @@ def point_acceleration(frames, acceleration, name, use_dbscan=False, eps=0.5, mi
             if k == -1:
                 # 噪声点：黑色叉号
                 plt.scatter(X[mask, 0], X[mask, 1], 
-                          c='black', marker='x', s=20, alpha=0.4,
-                          label=f'噪声点 ({sum(mask)})')
+                            c='black', marker='x', s=20, alpha=0.4,
+                            label=f'噪声点 ({sum(mask)})')
             else:
                 # 正常聚类：使用预定义颜色
                 color = colors[i % len(colors)]
                 plt.scatter(X[mask, 0], X[mask, 1], 
-                          c=color, marker='o', s=30, alpha=0.6,
-                          edgecolors='white', linewidth=0.5,
-                          label=f'聚类 {k} ({sum(mask)})')
+                            c=color, marker='o', s=30, alpha=0.6,
+                            edgecolors='white', linewidth=0.5,
+                            label=f'聚类 {k} ({sum(mask)})')
         
         # 添加统计信息
         info_text = f'聚类数: {n_clusters}\n'
@@ -893,7 +893,7 @@ def point_acceleration(frames, acceleration, name, use_dbscan=False, eps=0.5, mi
     else:
         # 原始散点图
         plt.scatter(frames, acceleration, c='blue', s=30, alpha=0.6,
-                   edgecolors='white', linewidth=0.5)
+                    edgecolors='white', linewidth=0.5)
         plt.xlabel('frames')
         plt.ylabel('acceleration')
         plt.title(f'加速度变化情况')
@@ -916,12 +916,14 @@ def auto_eps(acc_list, min_samples=3):
     neighbors = NearestNeighbors(n_neighbors=min_samples)
     neighbors.fit(X)
     distances, _ = neighbors.kneighbors(X)
-    
     # 取第k近的距离
     k_dist = np.sort(distances[:, -1])
-    
     # 找斜率最大点（拐点）
     slopes = np.diff(k_dist)
     eps_idx = np.argmax(slopes)
     eps = k_dist[eps_idx]
+    acc_gap = max(acc_list) - min(acc_list)  #求加速度差距以判断密集程度
+    if acc_gap < 50:
+        eps = eps*3
+
     return eps
