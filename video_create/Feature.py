@@ -183,5 +183,5 @@ class Feature:
         beta = self.get_beta_features()       # 2维列表
         gamma = self.get_gamma_features()     # 4维列表
         
-        all_features = part_angles #+ center #+ beta #+ gamma  # 列表拼接
+        all_features = part_angles + center + beta + gamma  # 列表拼接
         return all_features  # 27维列表

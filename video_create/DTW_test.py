@@ -8,8 +8,11 @@ from scipy.spatial.distance import euclidean
 from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
-TEMPLE_FILE = 'run_man_features.npy'
+TEMPLATE_VIDEO = 'run_man.mp4'  # 你的模板视频文件名
+TEST_VIDEO = 'run_man1.mp4'  # 你的测试视频文件名
+TEMPLATE_FILE = 'run_man_features.npy'
 TEST_FILE = 'run_man1_features.npy'
+VIEW_FRAME = 100
 
 def normalize_features(features: np.ndarray) -> np.ndarray:
     """归一化特征到[0,1]范围"""
@@ -24,7 +27,7 @@ def normalize_features(features: np.ndarray) -> np.ndarray:
             normalized[:, i] = col
     return normalized
 
-def calculate_frame_score(test_feat, template_feat):
+def calculate_frame_score(test_feat, template_feat,t):
     """
     计算单帧得分 - 参考文献公式(12)和(13)
     
@@ -38,23 +41,20 @@ def calculate_frame_score(test_feat, template_feat):
     """
     # 公式(12): q = |F_test - F_temp| / F_temp
     # 避免除零
-    denominator = np.abs(template_feat) + 1e-6
-    q = np.abs(test_feat - template_feat) / denominator
-    
+    denominator = np.abs(template_feat) + 1e-10
+    q = np.abs(test_feat - template_feat)
     # 取平均值作为该帧的差异度
     q_mean = np.mean(q)
-    score = q_mean
-    
-    # # 公式(13): 根据q值计算得分
-    # if q_mean <= t:
-    #     # q小于阈值，得满分
-    #     score = 100.0
-    # elif t < q_mean <= 1:
-    #     # q在阈值和1之间，线性扣分
-    #     score = 100.0 * (1 - q_mean + t)
-    # else:
-    #     # q大于1，得0分
-    #     score = 0.0
+
+    if q_mean <= t:
+        # q小于阈值，得满分
+        score = 100.0
+    elif t < q_mean <= 1:
+        # q在阈值和1之间，线性扣分
+        score = 100.0 * (1 - q_mean + t)
+    else:
+        # q大于1，得0分
+        score = 0.0
     
     return score
 
@@ -84,15 +84,13 @@ def calculate_video_score(test_features, template_features):
     for test_idx, template_idx in path:
         test_frame = test_features[test_idx]
         template_frame = template_features[template_idx]
-        
         # 计算该对齐对的得分
-        score = calculate_frame_score(test_frame, template_frame)
+        score = calculate_frame_score(test_frame, template_frame,t=0.001)
         frame_scores.append(score)
     
     # 3. 公式(14): 取平均作为最终得分
     final_score = np.mean(frame_scores)
-    print(path)
-    
+
     return final_score, frame_scores, path
 
 def score_video():
@@ -100,7 +98,7 @@ def score_video():
     
     # 设置路径
     features_dir = 'result/features'
-    template_file = TEMPLE_FILE     # 标准模板
+    template_file = TEMPLATE_FILE     # 标准模板
     test_file = TEST_FILE        # 测试视频
     
     template_path = os.path.join(features_dir, template_file)
@@ -144,8 +142,8 @@ def score_video():
     print("评分结果 (t为阈值系数):")
     print("-"*40)
     
-    score, frame_scores, path = calculate_video_score(norm_test, norm_template)
-    return score, frame_scores, path  # 修改这里，返回path
+    score, frame_scores, path = calculate_video_score(test_features, template_features)
+    return score, frame_scores, path, norm_test, norm_template  # 修改这里，返回更多信息
 
 
 def visualize_aligned_frames(test_video_path, template_video_path, path, pair_index, frame_scores=None):
@@ -193,26 +191,133 @@ def visualize_aligned_frames(test_video_path, template_video_path, path, pair_in
     plt.tight_layout()
     plt.show()
 
+def visualize_alignment_path(path, test_len, template_len, frame_scores=None):
+    """
+    可视化DTW对齐路径 - 修改版
+    
+    Args:
+        path: DTW路径，形状为(n_pairs, 2)的数组
+        test_len: 测试视频帧数
+        template_len: 模板视频帧数
+        frame_scores: 每对帧的得分（可选）
+    """
+    path = np.array(path)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # ========== 左图：对齐路径热力图（更清晰） ==========
+    path_test = path[:, 0]
+    path_template = path[:, 1]
+    
+    # 创建一个稀疏矩阵，只在对齐路径上的位置有值
+    cost_matrix = np.full((template_len, test_len), np.nan)  # 用NaN表示空白
+    
+    # 只在路径上的点填入得分
+    if frame_scores is not None:
+        for i, (test_idx, template_idx) in enumerate(path):
+            cost_matrix[template_idx, test_idx] = frame_scores[i]
+    
+    # 显示热力图 - 使用透明度让背景更清晰
+    im = ax1.imshow(cost_matrix, cmap='RdYlGn', aspect='auto', origin='lower',
+                    extent=[0, test_len, 0, template_len], 
+                    vmin=0, vmax=100, alpha=0.8)  # 设置透明度
+    
+    # 绘制对齐路径（用白色实线，更醒目）
+    ax1.plot(path_test, path_template, 'w-', linewidth=2.5, alpha=0.9, label='DTW对齐路径')
+    ax1.plot(path_test, path_template, 'k.', markersize=2, alpha=0.5)  # 黑色点标记具体对齐点
+    
+    # 添加颜色条
+    cbar = plt.colorbar(im, ax=ax1, label='帧得分', shrink=0.8)
+    cbar.ax.yaxis.label.set_color('black')
+    
+    ax1.set_xlabel('测试视频帧索引', fontsize=11)
+    ax1.set_ylabel('模板视频帧索引', fontsize=11)
+    ax1.set_title('DTW时序对齐路径及帧得分', fontsize=13)
+    ax1.legend(loc='upper left', framealpha=0.8)
+    ax1.grid(True, alpha=0.2, linestyle='--', color='gray')
+    
+    # 设置坐标轴范围
+    ax1.set_xlim([-5, test_len + 5])
+    ax1.set_ylim([-5, template_len + 5])
+    
+    # ========== 右图：只保留帧得分 ==========
+    if frame_scores is not None:
+        # 创建x轴坐标（对齐对序号）
+        x = np.arange(len(frame_scores))
+        
+        # 绘制得分曲线
+        ax2.plot(x, frame_scores, 'b-', linewidth=2, label='帧得分')
+        
+        # 添加填充区域
+        ax2.fill_between(x, frame_scores, 0, alpha=0.2, color='blue')
+        
+        # 添加平均线
+        mean_score = np.mean(frame_scores)
+        ax2.axhline(y=mean_score, color='r', linestyle='--', linewidth=1.5, 
+                    label=f'平均分: {mean_score:.2f}')
+        
+        # 设置y轴范围
+        ax2.set_ylim([0, 105])
+        ax2.set_xlim([0, len(frame_scores)])
+        
+        ax2.set_xlabel('对齐对序号', fontsize=11)
+        ax2.set_ylabel('帧得分', fontsize=11)
+        ax2.set_title('各对齐对的帧得分分布', fontsize=13)
+        ax2.legend(loc='best')
+        ax2.grid(True, alpha=0.3)
+        
+        # 标记最高分和最低分
+        max_idx = np.argmax(frame_scores)
+        min_idx = np.argmin(frame_scores)
+        ax2.plot(max_idx, frame_scores[max_idx], 'go', markersize=8, 
+                label=f'最高分: {frame_scores[max_idx]:.1f}')
+        ax2.plot(min_idx, frame_scores[min_idx], 'ro', markersize=8,
+                label=f'最低分: {frame_scores[min_idx]:.1f}')
+        
+        ax2.legend(loc='best', ncol=2)
+    
+    plt.suptitle(f'DTW对齐路径分析 (测试:{test_len}帧, 模板:{template_len}帧, 对齐对:{len(path)}对)', 
+                    fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.show()
+    
+    # 打印统计信息
+    print("\n对齐路径统计:")
+    print(f"  - 测试视频帧范围: [{min(path_test)}, {max(path_test)}]")
+    print(f"  - 模板视频帧范围: [{min(path_template)}, {max(path_template)}]")
+    print(f"  - 路径长度: {len(path)} 对")
+    
+    if frame_scores is not None:
+        print(f"  - 平均得分: {np.mean(frame_scores):.2f}")
+        print(f"  - 得分标准差: {np.std(frame_scores):.2f}")
+        print(f"  - 得分范围: [{min(frame_scores):.2f}, {max(frame_scores):.2f}]")
+
 if __name__ == '__main__':
-    score, frame_scores, path = score_video()
-    # 添加可视化部分
+    score, frame_scores, path, norm_test, norm_template = score_video()  # 接收返回的所有值
+    
+    # 添加对齐路径可视化
+    print("\n" + "="*60)
+    print("DTW对齐路径可视化")
+    print("="*60)
+    
+    # 可视化对齐路径
+    visualize_alignment_path(path, len(norm_test), len(norm_template), frame_scores)
+    
+    # 原有的帧可视化部分
     print("\n" + "="*60)
     print("可视化DTW对齐帧")
     print("="*60)
     
-    # 设置视频文件路径（根据你的实际文件位置修改）
-    test_video = 'run_man1.mp4'  # 你的测试视频文件名
-    template_video = 'run_man.mp4'  # 你的模板视频文件名
-    video_dir = 'video_origin/data_video/use'  # 视频文件所在目录，如果是当前目录就设为''
+    # 设置视频文件路径
+    test_video = TEST_VIDEO
+    template_video = TEMPLATE_VIDEO
+    video_dir = 'video_origin/data_video/use'
     
-    # 构建完整路径
     test_video_path = os.path.join(video_dir, test_video)
     template_video_path = os.path.join(video_dir, template_video)
     
-    # 检查视频文件是否存在
     if os.path.exists(test_video_path) and os.path.exists(template_video_path):
-        # 自定义查看特定的匹配对
-        pair_to_view = 99  # 你可以修改这个数字来查看不同的匹配对
+        pair_to_view = VIEW_FRAME
         if pair_to_view < len(frame_scores):
             visualize_aligned_frames(test_video_path, template_video_path, path, pair_to_view, frame_scores)
             print(f"已显示第 {pair_to_view} 对匹配对 (测试帧: {path[pair_to_view][0]}, 模板帧: {path[pair_to_view][1]}, 得分: {frame_scores[pair_to_view]:.3f})")
@@ -224,3 +329,6 @@ if __name__ == '__main__':
             print(f"  测试视频不存在: {test_video_path}")
         if not os.path.exists(template_video_path):
             print(f"  模板视频不存在: {template_video_path}")
+    
+    print("\n最终得分：")
+    print(f"{score:.2f}")  # 格式化输出
