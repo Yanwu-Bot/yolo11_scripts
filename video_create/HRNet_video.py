@@ -21,7 +21,7 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_man1.mp4'
+input_path = 'video_origin/data_video/use/run_woman.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
@@ -51,6 +51,7 @@ Key_point_list = []                      #用于存放当前帧关键点
 Key_point_acceleration = []              #用于存放当前所有关键点的加速度
 Max_acc = []                             #最大加速度总列表
 All_feature = []                         #用于存放特征
+All_point = []                           #用于存放关键点
 
 # 全局变量用于模型，避免重复加载
 device = None
@@ -311,7 +312,7 @@ def process_frame(img,preview=True):
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
-    return img, list_p, feature_frame
+    return img, p_pos, feature_frame
 
 def generate_video(input_path):
     """生成处理后的视频"""
@@ -341,8 +342,9 @@ def generate_video(input_path):
                 break
             frame_index += 1
             try:
-                processed_frame, list_p, feature_frame = process_frame(frame)
+                processed_frame, p_pos, feature_frame = process_frame(frame)
                 All_feature.append(feature_frame)         #把每一帧特征添加到总列表中
+                All_point.append(p_pos)                   #把每一帧关键点坐标添加到总列表中
                 out.write(processed_frame)                #绘制关键点（使用你的draw_select函数）
                 print(f"处理第 {frame_index}/{frame_count} 帧", end='\r')
                 progress_bar(frame_index,frame_count)
@@ -382,9 +384,15 @@ def generate_video(input_path):
     print(f"当前自动eps为{eps}")
     wrong_point = point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=8)
     features_array = np.array(All_feature)
-    print(All_feature)
+    point_array = np.array(All_point)
+    print("="*60)
+    print("特征列表大小为：")
     print(features_array.shape)
+    print("关键点列表大小为：")
+    print(point_array.shape)
+    print("="*60)
     np.save(f'result/features/{video_name}_features.npy', features_array)
+    np.save(f'result/features/{video_name}_point.npy', point_array)
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
