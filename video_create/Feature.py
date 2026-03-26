@@ -52,22 +52,29 @@ class Feature:
         angles = []
         angle_list = [
             calculate_angle(self.thorax, self.neck, self.r_shoulder),
+            calculate_angle(self.thorax, self.neck, self.l_shoulder),
             calculate_angle(self.thorax, self.hip_center, self.r_shoulder),
+            calculate_angle(self.thorax, self.hip_center, self.l_shoulder),
             calculate_angle(self.r_shoulder, self.thorax, self.r_elbow),
+            calculate_angle(self.l_shoulder, self.thorax, self.l_elbow),
             calculate_angle(self.r_elbow, self.r_shoulder, self.r_hand),
+            calculate_angle(self.l_elbow, self.l_shoulder, self.l_hand),            
+            calculate_angle(self.r_shoulder, self.neck, self.r_elbow),
             calculate_angle(self.l_shoulder, self.neck, self.l_elbow),
-            calculate_angle(self.l_elbow, self.l_shoulder, self.l_hand),
             calculate_angle(self.hip_center, self.thorax, self.r_hip),
+            calculate_angle(self.hip_center, self.thorax, self.l_hip),
             calculate_angle(self.r_hip, self.hip_center, self.r_knee),
-            calculate_angle(self.r_knee, self.r_hip, self.r_foot),
             calculate_angle(self.l_hip, self.hip_center, self.l_knee),
+            calculate_angle(self.r_knee, self.r_hip, self.r_foot),
             calculate_angle(self.l_knee, self.l_hip, self.l_foot),
             calculate_angle(self.r_elbow, self.r_shoulder, self.hip_center),
             calculate_angle(self.l_elbow, self.l_shoulder, self.hip_center),
             calculate_angle(self.r_knee, self.r_hip, self.neck),
             calculate_angle(self.l_knee, self.l_hip, self.neck),
             calculate_angle(self.l_shoulder, self.l_elbow, self.l_hand),
-            calculate_angle(self.r_shoulder, self.r_elbow, self.r_hand)
+            calculate_angle(self.r_shoulder, self.r_elbow, self.r_hand),
+            calculate_angle(self.r_hip, self.r_knee, self.r_foot),
+            calculate_angle(self.l_hip, self.l_knee, self.l_foot),
         ]
         
         # 转成弧度制并归一化

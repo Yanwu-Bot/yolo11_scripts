@@ -13,10 +13,17 @@ TEMPLATE_FILE_FEATURES = 'run_man_features.npy'
 TEST_FILE_FEATURES = 'run_woman_features.npy'
 TEMPLATE_FILE_POINT = 'run_man_point.npy'      # 新增：关键点文件
 TEST_FILE_POINT = 'run_woman_point.npy'        # 新增：关键点文件
-VIEW_FRAME = 91
+VIEW_FRAME = 50
 
 weight ={"fea":0.7,                            #评分权重
         "point":0.3}
+
+angle_weights = [1.8] * 24                   # 24个角度权重
+center_weights = [1.4] * 8                   # 8个中心坐标权重
+orientation_weight = [0.7]                   # 身体朝向权重
+feet_distance_weight = [1.2]                 # 两脚距离权重
+phase_weights = [1.3] * 4                    # 4个相位权重
+feature_weights = angle_weights+center_weights+orientation_weight+feet_distance_weight+phase_weights             
 
 def normalize_features(features: np.ndarray) -> np.ndarray:           #特征归一化
     """归一化特征到[0,1]范围"""
@@ -86,8 +93,11 @@ def normalize_keypoints(keypoints: np.ndarray) -> np.ndarray:
 
 def calculate_frame_score(test_feat, template_feat, t):
     """计算单帧得分"""
+    # q = np.abs(test_feat - template_feat)
+    # q_mean = np.mean(q)
+    f_weights = feature_weights/np.sum(feature_weights)
     q = np.abs(test_feat - template_feat)
-    q_mean = np.mean(q)
+    q_mean = np.sum(q * f_weights)
 
     if q_mean <= t:
         score = 100.0
@@ -120,7 +130,7 @@ def calculate_video_score(test_features, template_features):
         q_mean = np.mean(q)
         q_mean_list.append(q_mean)
         
-        score = calculate_frame_score(test_frame, template_frame, t=0.15)
+        score = calculate_frame_score(test_frame, template_frame, t=0.10)
         frame_scores.append(score)
     
     final_score = np.mean(frame_scores)
@@ -262,7 +272,7 @@ def score_video():
     
     return feat_score, point_score, frame_scores, path, q_mean_list, norm_test, norm_template, point_distances
 
-def plot_qmean_over_time(q_mean_list):
+def plot_qmean_over_time(q_mean_list,t=0.1):
     """
     只绘制q_mean随时间变化的图
     """
@@ -274,7 +284,7 @@ def plot_qmean_over_time(q_mean_list):
     plt.plot(x, q_mean_list, 'b-', linewidth=2, label='q_mean', alpha=0.8)
     
     # 添加阈值线
-    plt.axhline(y=0.15, color='r', linestyle='--', linewidth=2, label='阈值 t=0.15')
+    plt.axhline(y=t, color='r', linestyle='--', linewidth=2, label=f'阈值 t={t}')
     
     # 添加均值线
     mean_q = np.mean(q_mean_list)
@@ -282,9 +292,9 @@ def plot_qmean_over_time(q_mean_list):
                 label=f'均值: {mean_q:.3f}')
     
     # 填充区域
-    plt.fill_between(x, 0, q_mean_list, where=(np.array(q_mean_list) <= 0.15), 
+    plt.fill_between(x, 0, q_mean_list, where=(np.array(q_mean_list) <= t), 
                         color='green', alpha=0.2, label='≤阈值 (合格)')
-    plt.fill_between(x, 0, q_mean_list, where=(np.array(q_mean_list) > 0.15), 
+    plt.fill_between(x, 0, q_mean_list, where=(np.array(q_mean_list) > t), 
                         color='red', alpha=0.2, label='>阈值 (差异较大)')
     
     plt.xlabel('对齐对序号', fontsize=12)
@@ -305,8 +315,8 @@ def plot_qmean_over_time(q_mean_list):
     print(f"最小值: {min(q_mean_list):.4f}")
     print(f"最大值: {max(q_mean_list):.4f}")
     
-    exceed_ratio = np.mean(np.array(q_mean_list) > 0.15) * 100
-    print(f"\n超过阈值(0.15)的比例: {exceed_ratio:.2f}%")
+    exceed_ratio = np.mean(np.array(q_mean_list) > t) * 100
+    print(f"\n超过阈值({t})的比例: {exceed_ratio:.2f}%")
 
 def visualize_alignment_path(path, test_len, template_len, frame_scores=None):
     """可视化DTW对齐路径"""

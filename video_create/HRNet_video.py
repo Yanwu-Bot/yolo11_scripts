@@ -308,7 +308,7 @@ def process_frame(img,preview=True):
     draw = Draw(img,list_p)
     draw.draw_select()
     feature_frame = feature.get_all_features()       #获取当前帧的所有特征
-    feature_frame.append(step_fres)                  #特征增加步频
+    # feature_frame.append(step_fres)                  #特征增加步频
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
