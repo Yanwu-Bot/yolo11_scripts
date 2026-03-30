@@ -1,306 +1,565 @@
+import cv2
 import numpy as np
-import os
 import matplotlib.pyplot as plt
+import os
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
-from matplotlib import rcParams #字体
+from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 
-TEMPLE_FILE = 'run_man_features.npy'
-TEST_FILE = 'run_man1_features.npy'
 
-def normalize_features(features: np.ndarray) -> np.ndarray:
-    """归一化特征到[0,1]范围"""
-    normalized = np.zeros_like(features)
-    for i in range(features.shape[1]):
-        col = features[:, i]
-        min_val = np.min(col)
-        max_val = np.max(col)
-        if max_val > min_val:
-            normalized[:, i] = (col - min_val) / (max_val - min_val)
+class VideoScoreEvaluator:
+    """
+    视频动作质量评分器
+    
+    用于比较两个视频的动作相似度，支持：
+    - 特征向量评分（基于动作特征）
+    - 关键点评分（基于骨骼关键点）
+    - DTW对齐和可视化
+    """
+    
+    def __init__(self, 
+                template_video: str = None,
+                test_video: str = None,
+                features_dir: str = 'result/features',
+                video_dir: str = 'video_origin/data_video/use',
+                weight: dict = None):
+        """
+        初始化评分器
+        
+        Args:
+            template_video: 模板视频文件名
+            test_video: 测试视频文件名
+            features_dir: 特征文件目录
+            video_dir: 视频文件目录
+            weight: 评分权重 {'fea': float, 'point': float}
+        """
+        self.template_video = template_video
+        self.test_video = test_video
+        self.features_dir = features_dir
+        self.video_dir = video_dir
+        
+        # 设置默认权重
+        self.weight = weight if weight else {"fea": 0.7, "point": 0.3}
+        
+        # 特征权重配置
+        self.angle_weights = [1] * 24
+        self.center_weights = [1] * 8
+        self.orientation_weight = [1]
+        self.feet_distance_weight = [1]
+        self.phase_weights = [1] * 4
+        self.feature_weights = (self.angle_weights + self.center_weights + 
+                                self.orientation_weight + self.feet_distance_weight + 
+                                self.phase_weights)
+        
+        # 存储结果
+        self.feat_score = None
+        self.point_score = None
+        self.frame_scores = None
+        self.path = None
+        self.q_mean_list = None
+        self.point_distances = None
+        self.norm_test = None
+        self.norm_template = None
+        
+        # 视频路径
+        self.template_video_path = None
+        self.test_video_path = None
+        
+        if template_video and test_video:
+            self.set_videos(template_video, test_video)
+    
+    def set_videos(self, template_video: str, test_video: str):
+        """设置要比较的视频"""
+        self.template_video = template_video
+        self.test_video = test_video
+        self.template_video_path = os.path.join(self.video_dir, template_video)
+        self.test_video_path = os.path.join(self.video_dir, test_video)
+    
+    def set_feature_weights(self, 
+                            angle_weight: float = 1.8,
+                            center_weight: float = 1.4,
+                            orientation_weight: float = 0.7,
+                            feet_distance_weight: float = 1.2,
+                            phase_weight: float = 1.3):
+        """设置特征权重"""
+        self.angle_weights = [angle_weight] * 24
+        self.center_weights = [center_weight] * 8
+        self.orientation_weight = [orientation_weight]
+        self.feet_distance_weight = [feet_distance_weight]
+        self.phase_weights = [phase_weight] * 4
+        self.feature_weights = (self.angle_weights + self.center_weights + 
+                                self.orientation_weight + self.feet_distance_weight + 
+                                self.phase_weights)
+    
+    def normalize_features(self, features: np.ndarray) -> np.ndarray:
+        """归一化特征到[0,1]范围"""
+        normalized = np.zeros_like(features)
+        for i in range(features.shape[1]):
+            col = features[:, i]
+            min_val = np.min(col)
+            max_val = np.max(col)
+            if max_val > min_val:
+                normalized[:, i] = (col - min_val) / (max_val - min_val)
+            else:
+                normalized[:, i] = col
+        return normalized
+    
+    def normalize_keypoints(self, keypoints: np.ndarray) -> np.ndarray:
+        """
+        对关键点进行以人体为中心的归一化
+        
+        Args:
+            keypoints: 形状为 (帧数, 17, 2) 的关键点数组
+            
+        Returns:
+            归一化后的关键点数组，形状相同
+        """
+        normalized = np.zeros_like(keypoints, dtype=np.float32)
+        for i in range(keypoints.shape[0]):
+            frame_kps = keypoints[i]
+            valid_mask = ~((frame_kps[:, 0] == 0) & (frame_kps[:, 1] == 0))
+            
+            if np.sum(valid_mask) < 4:
+                normalized[i] = frame_kps
+                continue
+            
+            left_hip = frame_kps[11]
+            right_hip = frame_kps[12]
+            
+            # 确定参考点（髋部中心）
+            if (left_hip[0] == 0 and left_hip[1] == 0) or (right_hip[0] == 0 and right_hip[1] == 0):
+                reference = frame_kps[1]  # 使用鼻子作为参考
+                if reference[0] == 0 and reference[1] == 0:
+                    normalized[i] = frame_kps
+                    continue
+            else:
+                reference = (left_hip + right_hip) / 2
+            
+            # 确定缩放因子
+            left_shoulder = frame_kps[5]
+            right_shoulder = frame_kps[6]
+            if (left_shoulder[0] != 0 or left_shoulder[1] != 0) and (right_shoulder[0] != 0 or right_shoulder[1] != 0):
+                shoulder_width = np.linalg.norm(left_shoulder - right_shoulder)
+                scale = shoulder_width
+            else:
+                neck = frame_kps[1]
+                if neck[0] != 0 or neck[1] != 0:
+                    scale = np.linalg.norm(neck - reference)
+                else:
+                    scale = 1.0
+            
+            if scale < 1e-6:
+                scale = 1.0
+            
+            # 归一化关键点
+            for j in range(17):
+                if valid_mask[j]:
+                    normalized[i, j, 0] = (frame_kps[j, 0] - reference[0]) / scale
+                    normalized[i, j, 1] = (frame_kps[j, 1] - reference[1]) / scale
+                else:
+                    normalized[i, j] = [0, 0]
+        
+        return normalized
+    
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.10) -> float:
+        """计算单帧得分"""
+        f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
+        q = np.abs(test_feat - template_feat)
+        q_mean = np.sum(q * f_weights)
+        
+        if q_mean <= t:
+            score = 100.0
+        elif q_mean - t <= 0.3:
+            exceed = q_mean - t
+            score = 100 * np.exp(-2.5 * exceed)
+        elif 0.3 < q_mean - t <= 1:
+            exceed = q_mean - t
+            score = 100 * np.exp(-5 * exceed)
         else:
-            normalized[:, i] = col
-    return normalized
+            score = 0.0
+        
+        return score
+    
+    def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> tuple:
+        """计算整个视频的得分"""
+        distance, path = fastdtw(test_features, template_features, dist=euclidean)
+        path = np.array(path)
+        
+        print(f"DTW对齐完成: 路径长度 = {len(path)}")
+        
+        frame_scores = []
+        q_mean_list = []
+        
+        for test_idx, template_idx in path:
+            test_frame = test_features[test_idx]
+            template_frame = template_features[template_idx]
+            
+            q = np.abs(test_frame - template_frame)
+            q_mean = np.mean(q)
+            q_mean_list.append(q_mean)
+            
+            score = self.calculate_frame_score(test_frame, template_frame, t=0.10)
+            frame_scores.append(score)
+        
+        final_score = np.mean(frame_scores)
+        return final_score, frame_scores, path, q_mean_list
+    
+    def calculate_keypoint_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
+        """计算关键点的DTW评分"""
+        print("\n" + "-"*40)
+        print("关键点评分")
+        print("-"*40)
+        
+        # 归一化关键点
+        test_norm = self.normalize_keypoints(test_points)
+        template_norm = self.normalize_keypoints(template_points)
+        
+        # 重塑为适合DTW的形状 (帧数, 34)
+        test_flat = test_norm.reshape(test_norm.shape[0], -1)
+        template_flat = template_norm.reshape(template_norm.shape[0], -1)
+        
+        # 计算DTW距离和路径
+        distance, path = fastdtw(test_flat, template_flat, dist=euclidean)
+        path = np.array(path)
+        
+        print(f"关键点DTW距离: {distance:.4f}")
+        print(f"对齐路径长度: {len(path)}")
+        
+        # 计算每对对齐帧的得分和距离
+        frame_scores = []
+        frame_distances = []
+        for test_idx, template_idx in path:
+            test_frame = test_flat[test_idx]
+            template_frame = template_flat[template_idx]
+            dist = np.linalg.norm(test_frame - template_frame)
+            frame_distances.append(dist)
+            
+            # 将距离转换为得分
+            if dist <= 35.0:
+                score = 100 * (1 - dist / 100)
+            else:
+                score = 0.0
+            frame_scores.append(score)
+        
+        final_score = np.mean(frame_scores)
+        return final_score, frame_scores, frame_distances, path
+    
+    def score_video(self) -> tuple:
+        """主函数：对测试视频评分"""
+        # 构建文件路径
+        template_feat_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.template_video)[0]}_features.npy")
+        test_feat_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.test_video)[0]}_features.npy")
+        template_point_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.template_video)[0]}_normalized_points.npy")
+        test_point_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.test_video)[0]}_normalized_points.npy")
+        
+        # 检查特征文件是否存在
+        if not os.path.exists(template_feat_path) or not os.path.exists(test_feat_path):
+            print("错误: 找不到特征文件")
+            return None, None, None, None, None, None, None, None
+        
+        print("="*60)
+        print("视频动作质量评分")
+        print("="*60)
+        
+        # 加载特征
+        template_features = np.load(template_feat_path)
+        test_features = np.load(test_feat_path)
+        
+        print(f"\n模板视频帧数: {template_features.shape[0]}")
+        print(f"测试视频帧数: {test_features.shape[0]}")
+        
+        # 归一化特征
+        norm_template = self.normalize_features(template_features)
+        norm_test = self.normalize_features(test_features)
+        
+        # 特征评分
+        self.feat_score, self.frame_scores, self.path, self.q_mean_list = \
+            self.calculate_video_score(norm_test, norm_template)
+        
+        print(f"\n特征得分: {self.feat_score:.2f}")
+        
+        # 关键点评分
+        self.point_score = 0.0
+        self.point_distances = None
+        
+        if os.path.exists(template_point_path) and os.path.exists(test_point_path):
+            print("\n" + "="*60)
+            print("开始计算关键点评分")
+            print("="*60)
+            
+            template_points = np.load(template_point_path)
+            test_points = np.load(test_point_path)
+            
+            print(f"模板关键点形状: {template_points.shape}")
+            print(f"测试关键点形状: {test_points.shape}")
+            
+            # 确保是 (帧数, 17, 2) 格式
+            if len(template_points.shape) == 3:
+                if template_points.shape[2] == 3:
+                    template_points = template_points[:, :, :2]
+            if len(test_points.shape) == 3:
+                if test_points.shape[2] == 3:
+                    test_points = test_points[:, :, :2]
+            
+            self.point_score, point_frame_scores, self.point_distances, point_path = \
+                self.calculate_keypoint_score(test_points, template_points)
+            print(f"\n关键点得分: {self.point_score:.2f}")
+        else:
+            print("\n警告: 找不到关键点文件，跳过关键点评分")
+        
+        self.norm_test = norm_test
+        self.norm_template = norm_template
+        
+        return (self.feat_score, self.point_score, self.frame_scores, self.path, 
+                self.q_mean_list, self.norm_test, self.norm_template, self.point_distances)
+    
+    def plot_qmean_over_time(self, t: float = 0.1):
+        """绘制q_mean随时间变化的图"""
+        if self.q_mean_list is None:
+            print("没有q_mean数据，请先运行 score_video()")
+            return
+        
+        plt.figure(figsize=(14, 6))
+        
+        x = np.arange(len(self.q_mean_list))
+        
+        # 绘制q_mean曲线
+        plt.plot(x, self.q_mean_list, 'b-', linewidth=2, label='q_mean', alpha=0.8)
+        
+        # 添加阈值线
+        plt.axhline(y=t, color='r', linestyle='--', linewidth=2, label=f'阈值 t={t}')
+        
+        # 添加均值线
+        mean_q = np.mean(self.q_mean_list)
+        plt.axhline(y=mean_q, color='g', linestyle='--', linewidth=2, 
+                    label=f'均值: {mean_q:.3f}')
+        
+        # 填充区域
+        q_array = np.array(self.q_mean_list)
+        plt.fill_between(x, 0, q_array, where=(q_array <= t), 
+                        color='green', alpha=0.2, label='≤阈值 (合格)')
+        plt.fill_between(x, 0, q_array, where=(q_array > t), 
+                        color='red', alpha=0.2, label='>阈值 (差异较大)')
+        
+        plt.xlabel('对齐对序号', fontsize=12)
+        plt.ylabel('q_mean值 (帧间差异)', fontsize=12)
+        plt.title('q_mean随时间变化图', fontsize=14)
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        
+        # 打印统计信息
+        print("\n" + "="*40)
+        print("q_mean统计")
+        print("="*40)
+        print(f"均值: {np.mean(self.q_mean_list):.4f}")
+        print(f"标准差: {np.std(self.q_mean_list):.4f}")
+        print(f"中位数: {np.median(self.q_mean_list):.4f}")
+        print(f"最小值: {min(self.q_mean_list):.4f}")
+        print(f"最大值: {max(self.q_mean_list):.4f}")
+        
+        exceed_ratio = np.mean(q_array > t) * 100
+        print(f"\n超过阈值({t})的比例: {exceed_ratio:.2f}%")
+    
+    def plot_dist_over_time(self):
+        """绘制关键点距离随时间变化的图"""
+        if self.point_distances is None:
+            print("没有关键点距离数据，请先运行 score_video()")
+            return
+        
+        plt.figure(figsize=(14, 6))
+        
+        x = np.arange(len(self.point_distances))
+        
+        # 绘制dist曲线
+        plt.plot(x, self.point_distances, 'r-', linewidth=2, label='关键点距离', alpha=0.8)
+        
+        # 添加均值线
+        mean_dist = np.mean(self.point_distances)
+        plt.axhline(y=mean_dist, color='g', linestyle='--', linewidth=2, 
+                    label=f'均值: {mean_dist:.3f}')
+        
+        # 添加阈值线
+        plt.axhline(y=3.0, color='orange', linestyle=':', linewidth=1.5, 
+                    label='参考阈值: 3.0')
+        
+        plt.xlabel('对齐对序号', fontsize=12)
+        plt.ylabel('欧氏距离', fontsize=12)
+        plt.title('关键点距离随时间变化图', fontsize=14)
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        
+        # 打印统计信息
+        print("\n" + "="*40)
+        print("关键点距离统计")
+        print("="*40)
+        print(f"均值: {np.mean(self.point_distances):.4f}")
+        print(f"标准差: {np.std(self.point_distances):.4f}")
+        print(f"中位数: {np.median(self.point_distances):.4f}")
+        print(f"最小值: {min(self.point_distances):.4f}")
+        print(f"最大值: {max(self.point_distances):.4f}")
+    
+    def visualize_alignment_path(self):
+        """可视化DTW对齐路径"""
+        if self.path is None or self.norm_test is None or self.norm_template is None:
+            print("没有对齐数据，请先运行 score_video()")
+            return
+        
+        path = np.array(self.path)
+        test_len = len(self.norm_test)
+        template_len = len(self.norm_template)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # 左图：对齐路径
+        path_test = path[:, 0]
+        path_template = path[:, 1]
+        
+        cost_matrix = np.full((template_len, test_len), np.nan)
+        if self.frame_scores is not None:
+            for i, (test_idx, template_idx) in enumerate(path):
+                cost_matrix[template_idx, test_idx] = self.frame_scores[i]
+        
+        im = ax1.imshow(cost_matrix, cmap='RdYlGn', aspect='auto', origin='lower',
+                        extent=[0, test_len, 0, template_len], vmin=0, vmax=100, alpha=0.8)
+        
+        ax1.plot(path_test, path_template, 'w-', linewidth=2.5, alpha=0.9, label='DTW对齐路径')
+        ax1.plot(path_test, path_template, 'k.', markersize=2, alpha=0.5)
+        
+        plt.colorbar(im, ax=ax1, label='帧得分')
+        ax1.set_xlabel('测试视频帧索引')
+        ax1.set_ylabel('模板视频帧索引')
+        ax1.set_title('DTW对齐路径')
+        ax1.legend()
+        ax1.grid(True, alpha=0.2)
+        
+        # 右图：得分分布
+        if self.frame_scores is not None:
+            x = np.arange(len(self.frame_scores))
+            ax2.plot(x, self.frame_scores, 'b-', linewidth=2, label='帧得分')
+            ax2.fill_between(x, self.frame_scores, 0, alpha=0.2, color='blue')
+            
+            mean_score = np.mean(self.frame_scores)
+            ax2.axhline(y=mean_score, color='r', linestyle='--', linewidth=1.5, 
+                        label=f'平均分: {mean_score:.2f}')
+            
+            ax2.set_xlabel('对齐对序号')
+            ax2.set_ylabel('帧得分')
+            ax2.set_title('帧得分分布')
+            ax2.set_ylim([0, 105])
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+        
+        plt.suptitle(f'DTW对齐分析 (测试:{test_len}帧, 模板:{template_len}帧)')
+        plt.tight_layout()
+        plt.show()
+    
+    def visualize_aligned_frames(self, pair_index: int):
+        """可视化指定对齐对的两帧画面"""
+        if self.path is None:
+            print("没有对齐数据，请先运行 score_video()")
+            return
+        
+        if not self.template_video_path or not self.test_video_path:
+            print("请先设置视频路径")
+            return
+        
+        if pair_index >= len(self.path):
+            print(f"pair_index {pair_index} 超出范围 (最大 {len(self.path)-1})")
+            return
+        
+        test_idx, template_idx = self.path[pair_index]
+        
+        cap = cv2.VideoCapture(self.test_video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, test_idx)
+        ret, test_frame = cap.read()
+        cap.release()
+        
+        cap = cv2.VideoCapture(self.template_video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, template_idx)
+        ret, template_frame = cap.read()
+        cap.release()
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        
+        test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
+        template_frame_rgb = cv2.cvtColor(template_frame, cv2.COLOR_BGR2RGB)
+        
+        ax1.imshow(test_frame_rgb)
+        score_text = f'\n得分: {self.frame_scores[pair_index]:.3f}' if self.frame_scores else ''
+        ax1.set_title(f'测试视频 - 第{test_idx}帧{score_text}')
+        ax1.axis('off')
+        
+        ax2.imshow(template_frame_rgb)
+        ax2.set_title(f'模板视频 - 第{template_idx}帧')
+        ax2.axis('off')
+        
+        plt.suptitle(f'DTW对齐对 #{pair_index}')
+        plt.tight_layout()
+        plt.show()
+    
+    def get_combined_score(self) -> float:
+        """获取综合得分"""
+        if self.feat_score is None:
+            print("请先运行 score_video()")
+            return 0.0
+        
+        point_score = self.point_score if self.point_score is not None else 0.0
+        combined_score = (self.feat_score * self.weight['fea'] + 
+                         point_score * self.weight['point'])
+        return combined_score
+    
+    def print_summary(self):
+        """打印评分摘要"""
+        if self.feat_score is None:
+            print("请先运行 score_video()")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"评分摘要")
+        print(f"{'='*60}")
+        print(f"模板视频: {self.template_video}")
+        print(f"测试视频: {self.test_video}")
+        print(f"{'='*60}")
+        print(f"特征得分: {self.feat_score:.2f}")
+        if self.point_score is not None:
+            print(f"关键点得分: {self.point_score:.2f}")
+        print(f"{'='*60}")
+        print(f"综合得分: {self.get_combined_score():.2f}")
+        print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}")
+        print(f"{'='*60}")
 
-def calculate_frame_score(test_feat, template_feat, t=0.15):
-    """
-    计算单帧得分 - 参考文献公式(12)和(13)
-    
-    Args:
-        test_feat: 测试视频当前帧的特征 (32维)
-        template_feat: 模板视频当前帧的特征 (32维)
-        t: 阈值系数 (先不考虑异常检测，用默认值0.15)
-    
-    Returns:
-        score: 该帧的得分 (0-100)
-    """
-    # 公式(12): q = |F_test - F_temp| / F_temp
-    # 避免除零
-    denominator = np.abs(template_feat) + 1e-6
-    q = np.abs(test_feat - template_feat) / denominator
-    
-    # 取平均值作为该帧的差异度
-    q_mean = np.mean(q)
-    
-    # 公式(13): 根据q值计算得分
-    if q_mean <= t:
-        # q小于阈值，得满分
-        score = 100.0
-    elif t < q_mean <= 1:
-        # q在阈值和1之间，线性扣分
-        score = 100.0 * (1 - q_mean + t)
-    else:
-        # q大于1，得0分
-        score = 0.0
-    
-    return score
-
-def calculate_video_score(test_features, template_features, t=0.15):
-    """
-    计算整个视频的得分 - 参考文献公式(14)
-    
-    Args:
-        test_features: 测试视频特征 (n_frames, 32)
-        template_features: 模板视频特征 (m_frames, 32)
-        t: 阈值系数
-    
-    Returns:
-        score: 视频得分 (0-100)
-        frame_scores: 每帧的得分
-        path: DTW对齐路径
-    """
-    # 1. 首先用DTW对齐两个序列
-    distance, path = fastdtw(test_features, template_features, dist=euclidean)
-    path = np.array(path)
-    
-    print(f"DTW对齐完成: 路径长度 = {len(path)}")
-    
-    # 2. 沿着对齐路径计算每对帧的得分
-    frame_scores = []
-    
-    for test_idx, template_idx in path:
-        test_frame = test_features[test_idx]
-        template_frame = template_features[template_idx]
-        
-        # 计算该对齐对的得分
-        score = calculate_frame_score(test_frame, template_frame, t)
-        frame_scores.append(score)
-    
-    # 3. 公式(14): 取平均作为最终得分
-    final_score = np.mean(frame_scores)
-    
-    return final_score, frame_scores, path
-
-def score_video():
-    """主函数：对测试视频评分"""
-    
-    # 设置路径
-    features_dir = 'result/features'
-    template_file = TEMPLE_FILE     # 标准模板
-    test_file = TEST_FILE        # 测试视频
-    
-    template_path = os.path.join(features_dir, template_file)
-    test_path = os.path.join(features_dir, test_file)
-    
-    # 检查文件
-    if not os.path.exists(template_path):
-        print(f"错误: 找不到模板文件 {template_path}")
-        return
-    if not os.path.exists(test_path):
-        print(f"错误: 找不到测试文件 {test_path}")
-        return
-    
-    print("="*60)
-    print("视频动作质量评分")
-    print("="*60)
-    
-    # 加载特征
-    template_features = np.load(template_path)
-    test_features = np.load(test_path)
-    
-    template_name = template_file.replace('_features.npy', '')
-    test_name = test_file.replace('_features.npy', '')
-    
-    print(f"\n标准模板: {template_name}")
-    print(f"  帧数: {template_features.shape[0]}")
-    print(f"  特征范围: [{template_features.min():.2f}, {template_features.max():.2f}]")
-    
-    print(f"\n测试视频: {test_name}")
-    print(f"  帧数: {test_features.shape[0]}")
-    print(f"  特征范围: [{test_features.min():.2f}, {test_features.max():.2f}]")
-    
-    # 归一化特征
-    print("\n归一化特征...")
-    norm_template = normalize_features(template_features)
-    norm_test = normalize_features(test_features)
-    
-    # 测试不同的t值
-    t_values = [0.1, 0.15, 0.2, 0.25, 0.3]
-    results = {}
-    
-    print("\n" + "-"*40)
-    print("评分结果 (t为阈值系数):")
-    print("-"*40)
-    
-    for t in t_values:
-        score, frame_scores, path = calculate_video_score(norm_test, norm_template, t)
-        results[t] = {
-            'score': score,
-            'frame_scores': frame_scores,
-            'path': path
-        }
-        print(f"t = {t:.2f}: 得分 = {score:.2f}分")
-    
-    # 使用默认t=0.15进行详细分析
-    t_default = 0.15
-    score, frame_scores, path = results[t_default]['score'], results[t_default]['frame_scores'], results[t_default]['path']
-    
-    print(f"\n" + "="*60)
-    print(f"详细分析 (t = {t_default})")
-    print("="*60)
-    
-    print(f"\n最终得分: {score:.2f}分")
-    print(f"对齐路径长度: {len(path)}")
-    print(f"测试视频帧数: {len(norm_test)}")
-    print(f"模板视频帧数: {len(norm_template)}")
-    
-    # 得分统计
-    print(f"\n帧得分统计:")
-    print(f"  最高分: {max(frame_scores):.2f}分")
-    print(f"  最低分: {min(frame_scores):.2f}分")
-    print(f"  平均分: {np.mean(frame_scores):.2f}分")
-    print(f"  中位数: {np.median(frame_scores):.2f}分")
-    print(f"  标准差: {np.std(frame_scores):.2f}")
-    
-    # 得分分布
-    excellent = sum(1 for s in frame_scores if s >= 90)
-    good = sum(1 for s in frame_scores if 80 <= s < 90)
-    fair = sum(1 for s in frame_scores if 60 <= s < 80)
-    poor = sum(1 for s in frame_scores if s < 60)
-    
-    print(f"\n得分分布:")
-    print(f"  优秀 (90-100分): {excellent} 帧 ({excellent/len(frame_scores)*100:.1f}%)")
-    print(f"  良好 (80-89分): {good} 帧 ({good/len(frame_scores)*100:.1f}%)")
-    print(f"  及格 (60-79分): {fair} 帧 ({fair/len(frame_scores)*100:.1f}%)")
-    print(f"  不及格 (0-59分): {poor} 帧 ({poor/len(frame_scores)*100:.1f}%)")
-    
-    # 可视化
-    print("\n生成可视化图表...")
-    
-    fig, axes = plt.subplots(3, 1, figsize=(15, 12))
-    
-    # 1. 对齐路径
-    ax = axes[0]
-    ax.plot(path[:, 0], path[:, 1], 'b-', linewidth=0.8, alpha=0.7)
-    ax.set_xlabel('测试视频帧索引')
-    ax.set_ylabel('模板视频帧索引')
-    ax.set_title(f'DTW对齐路径 (总得分: {score:.2f})')
-    ax.grid(True, alpha=0.3)
-    
-    # 2. 帧得分曲线
-    ax = axes[1]
-    ax.plot(frame_scores, 'g-', linewidth=1.5)
-    ax.axhline(y=90, color='gold', linestyle='--', alpha=0.7, label='优秀线 (90分)')
-    ax.axhline(y=80, color='lime', linestyle='--', alpha=0.7, label='良好线 (80分)')
-    ax.axhline(y=60, color='orange', linestyle='--', alpha=0.7, label='及格线 (60分)')
-    ax.axhline(y=score, color='red', linestyle='-', linewidth=2, label=f'平均分 ({score:.1f})')
-    
-    ax.set_xlabel('对齐路径索引')
-    ax.set_ylabel('得分')
-    ax.set_title(f'逐帧得分 (t={t_default})')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 105)
-    
-    # 3. 得分直方图
-    ax = axes[2]
-    bins = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-    ax.hist(frame_scores, bins=bins, edgecolor='black', alpha=0.7, color='skyblue')
-    ax.axvline(x=score, color='red', linestyle='-', linewidth=2, label=f'平均分 ({score:.1f})')
-    
-    ax.set_xlabel('得分区间')
-    ax.set_ylabel('帧数')
-    ax.set_title('得分分布直方图')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    
-    # 保存结果
-    output_dir = 'result/scores'
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 保存可视化
-    vis_path = f"{output_dir}/{test_name}_vs_{template_name}_score.png"
-    plt.savefig(vis_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"可视化已保存: {vis_path}")
-    
-    # 保存得分数据
-    scores_data = {
-        'test_name': test_name,
-        'template_name': template_name,
-        't_default': t_default,
-        'final_score': float(score),
-        'frame_scores': [float(s) for s in frame_scores],
-        'score_stats': {
-            'mean': float(np.mean(frame_scores)),
-            'median': float(np.median(frame_scores)),
-            'std': float(np.std(frame_scores)),
-            'min': float(min(frame_scores)),
-            'max': float(max(frame_scores))
-        },
-        'distribution': {
-            'excellent': excellent,
-            'good': good,
-            'fair': fair,
-            'poor': poor
-        },
-        't_values': {str(t): float(results[t]['score']) for t in t_values}
-    }
-    
-    import json
-    with open(f"{output_dir}/{test_name}_score.json", 'w', encoding='utf-8') as f:
-        json.dump(scores_data, f, indent=2, ensure_ascii=False)
-    print(f"得分数据已保存: {output_dir}/{test_name}_score.json")
-    
-    # 生成报告
-    report_path = f"{output_dir}/{test_name}_score_report.txt"
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("动作质量评分报告\n")
-        f.write("="*50 + "\n\n")
-        
-        f.write(f"测试视频: {test_name}\n")
-        f.write(f"标准模板: {template_name}\n")
-        f.write(f"阈值系数 t = {t_default}\n\n")
-        
-        f.write(f"最终得分: {score:.2f} 分\n\n")
-        
-        f.write("不同阈值下的得分:\n")
-        for t, data in results.items():
-            f.write(f"  t = {t:.2f}: {data['score']:.2f} 分\n")
-        
-        f.write("\n帧得分统计:\n")
-        f.write(f"  平均分: {np.mean(frame_scores):.2f}\n")
-        f.write(f"  中位数: {np.median(frame_scores):.2f}\n")
-        f.write(f"  标准差: {np.std(frame_scores):.2f}\n")
-        f.write(f"  最高分: {max(frame_scores):.2f}\n")
-        f.write(f"  最低分: {min(frame_scores):.2f}\n\n")
-        
-        f.write("得分分布:\n")
-        f.write(f"  优秀 (90-100): {excellent} 帧 ({excellent/len(frame_scores)*100:.1f}%)\n")
-        f.write(f"  良好 (80-89): {good} 帧 ({good/len(frame_scores)*100:.1f}%)\n")
-        f.write(f"  及格 (60-79): {fair} 帧 ({fair/len(frame_scores)*100:.1f}%)\n")
-        f.write(f"  不及格 (0-59): {poor} 帧 ({poor/len(frame_scores)*100:.1f}%)\n")
-    
-    print(f"评分报告已保存: {report_path}")
-    
-    print("\n" + "="*60)
-    print(f"✅ 评分完成!")
-    print(f"   测试视频 '{test_name}' 得分: {score:.2f} 分 (t={t_default})")
-    print("="*60)
-    
-    return score, frame_scores
 
 if __name__ == '__main__':
-    score, frame_scores = score_video()
+    # 创建评分器实例
+    evaluator = VideoScoreEvaluator(
+        template_video='run_man.mp4',
+        test_video='run_woman.mp4',
+        features_dir='result/features',
+        video_dir='video_origin/data_video/use',
+        weight={"fea": 0.7, "point": 0.3}
+    )
+    
+    # 运行评分
+    evaluator.score_video()
+    
+    # 可视化结果
+    evaluator.plot_qmean_over_time(t=0.1)
+    evaluator.plot_dist_over_time()
+    evaluator.visualize_alignment_path()
+    
+    # 可视化指定对齐帧
+    VIEW_FRAME = 257
+    if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
+        evaluator.visualize_aligned_frames(VIEW_FRAME)
+    
+    # 打印摘要
+    evaluator.print_summary()

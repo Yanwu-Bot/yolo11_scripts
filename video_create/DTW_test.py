@@ -11,9 +11,9 @@ TEMPLATE_VIDEO = 'run_man.mp4'
 TEST_VIDEO = 'run_woman.mp4'
 TEMPLATE_FILE_FEATURES = 'run_man_features.npy'
 TEST_FILE_FEATURES = 'run_woman_features.npy'
-TEMPLATE_FILE_POINT = 'run_man_point.npy'      # 新增：关键点文件
-TEST_FILE_POINT = 'run_woman_point.npy'        # 新增：关键点文件
-VIEW_FRAME = 50
+TEMPLATE_FILE_POINT = 'run_man_points.npy'          # 新增：关键点文件
+TEST_FILE_POINT = 'run_woman_points.npy'        # 新增：关键点文件
+VIEW_FRAME = 257
 
 weight ={"fea":0.7,                            #评分权重
         "point":0.3}

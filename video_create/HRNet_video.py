@@ -1,5 +1,6 @@
 #结合了YOLO人体识别和HRnet姿态检测的视频生成代码,生成耗时更少
 
+import math  
 import os
 import json
 import torch
@@ -134,6 +135,60 @@ def detect_person_with_yolo(frame, conf_threshold=0.5):
                     return [float(x1), float(y1), float(x2), float(y2)], conf
     return None, 0
 
+def normalize_keypoints(p_pos, target_torso_length=100):
+    """
+    将关键点坐标归一化到标准躯干长度
+    p_pos: 原始关键点坐标列表，格式为 [(x1,y1), (x2,y2), ...]
+    target_torso_length: 目标躯干长度（像素），默认100
+    返回: 归一化后的关键点坐标列表
+    """
+    if len(p_pos) < 17:
+        return p_pos
+    
+    # 获取躯干中心点（肩膀中点和髋部中点）
+    # 左肩(p5)和右肩(p6)的中点
+    shoulder_center_x = (p_pos[5][0] + p_pos[6][0]) / 2
+    shoulder_center_y = (p_pos[5][1] + p_pos[6][1]) / 2
+    
+    # 左髋(p11)和右髋(p12)的中点
+    hip_center_x = (p_pos[11][0] + p_pos[12][0]) / 2
+    hip_center_y = (p_pos[11][1] + p_pos[12][1]) / 2
+    
+    # 计算躯干长度
+    torso_length = math.sqrt((shoulder_center_x - hip_center_x)**2 + 
+                              (shoulder_center_y - hip_center_y)**2)
+    
+    if torso_length < 1e-6:
+        return p_pos
+    
+    # 计算缩放比例
+    scale = target_torso_length / torso_length
+    
+    # 以髋部中点为归一化原点
+    center_x = hip_center_x
+    center_y = hip_center_y
+    
+    # 归一化所有关键点
+    normalized_points = []
+    for i in range(len(p_pos)):
+        if i < 17:  # 只处理17个关键点
+            norm_x = (p_pos[i][0] - center_x) * scale
+            norm_y = (p_pos[i][1] - center_y) * scale
+            normalized_points.append([norm_x, norm_y])
+        else:
+            normalized_points.append(p_pos[i])
+    
+    return normalized_points, scale, torso_length, (center_x, center_y)
+
+
+def get_normalized_keypoints_for_storage(p_pos, target_torso_length=100):
+    """
+    获取用于存储的归一化关键点坐标
+    返回归一化后的关键点，便于不同视频之间比较
+    """
+    normalized_points, scale, original_length, center = normalize_keypoints(p_pos, target_torso_length)
+    return normalized_points
+
 def predict_frame(frame):
     """处理单帧图像，检测关键点（使用YOLO+HRNet）"""
     global device, hrnet_model, yolo_model, person_info, hrnet_transform
@@ -239,7 +294,7 @@ def predict_frame(frame):
         
         return result_list, scores
 
-def process_frame(img,preview=True):
+def process_frame(img,preview=True, normalize_for_storage=True):
     """处理视频帧"""
     global current_frame, step_count, step_fres, score, time_current
     # 预测单帧状态
@@ -252,6 +307,14 @@ def process_frame(img,preview=True):
     angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
     angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
     p_pos = get_keypoints(list_p)
+    
+    # 添加归一化处理
+    normalized_points = None
+    scale_info = None
+    if normalize_for_storage and p_pos:
+        normalized_points, scale, torso_length, center = normalize_keypoints(p_pos, target_torso_length=100)
+        scale_info = {'scale': scale, 'torso_length': torso_length, 'center': center}
+    
     trajectory_tracker.update(p_pos) #更新轨迹
     feature = Feature(p_pos)         #获取关键特征
 
@@ -304,15 +367,24 @@ def process_frame(img,preview=True):
     cv2.putText(img, str(step_count), (10, 100), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                 fontScale=0.6, thickness=2, color=(255,0,0))
+    
+    # 可选：显示归一化信息
+    if scale_info and scale_info['torso_length'] > 0:
+        cv2.putText(img, f"Torso: {scale_info['torso_length']:.0f}px", (10, 180), 
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                    fontScale=0.5, thickness=1, color=(0,255,255))
+    
     current_frame += 1
     draw = Draw(img,list_p)
     draw.draw_select()
     feature_frame = feature.get_all_features()       #获取当前帧的所有特征
     # feature_frame.append(step_fres)                  #特征增加步频
+    
+    # 将归一化后的关键点也添加到返回值中
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
-    return img, p_pos, feature_frame
+    return img, p_pos, feature_frame, normalized_points, scale_info
 
 def generate_video(input_path):
     """生成处理后的视频"""
@@ -334,6 +406,11 @@ def generate_video(input_path):
     if out is None:
         print("无法创建视频输出")
         return
+    
+    # 存储归一化关键点的列表
+    All_normalized_points = []
+    All_scale_info = []
+    
     try:
         frame_index = 0
         while cap.isOpened():
@@ -342,15 +419,25 @@ def generate_video(input_path):
                 break
             frame_index += 1
             try:
-                processed_frame, p_pos, feature_frame = process_frame(frame)
-                All_feature.append(feature_frame)         #把每一帧特征添加到总列表中
-                All_point.append(p_pos)                   #把每一帧关键点坐标添加到总列表中
-                out.write(processed_frame)                #绘制关键点（使用你的draw_select函数）
+                processed_frame, p_pos, feature_frame, normalized_points, scale_info = process_frame(frame, normalize_for_storage=True)
+                All_feature.append(feature_frame)
+                All_point.append(p_pos)
+                
+                # 只保存有效的归一化点（非None）
+                if normalized_points is not None:
+                    # 转换为numpy数组并确保是float32
+                    norm_array = np.array(normalized_points, dtype=np.float32)
+                    All_normalized_points.append(norm_array)
+                else:
+                    # 没有检测到人物时，添加一个全零的占位
+                    All_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+                
+                All_scale_info.append(scale_info)
+                out.write(processed_frame)
                 print(f"处理第 {frame_index}/{frame_count} 帧", end='\r')
-                progress_bar(frame_index,frame_count)
+                progress_bar(frame_index, frame_count)
             except Exception as e:
                 print(f'处理第{frame_index}帧时出错: {str(e)[:50]}...')
-                # 如果出错，写入原始帧
                 out.write(frame)
                 continue
                 
@@ -366,33 +453,48 @@ def generate_video(input_path):
             cap.release()
         print('\n视频处理完成')
         print('Video saved to:', output_path)
+    
     # 绘制轨迹曲线
     trajectory_tracker.plot_trajectory_curves(
         save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
     )
-    # trajectory_tracker.plot_2d_trajectory_map(
-    #     save_path=f"{trajectory_tracker.output_dir}/final_trajectory_map.png"
-    # )
     trajectory_tracker.export_trajectory_data(
         csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
     )
 
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
-    frames = list(range(2,frame_count + 1))
+    frames = list(range(2, frame_count + 1))
     print(len(Max_acc))
-    eps = auto_eps(Max_acc,8)
+    eps = auto_eps(Max_acc, 7)
     print(f"当前自动eps为{eps}")
-    wrong_point = point_acceleration(frames,Max_acc,video_name,use_dbscan=True,eps=eps,min_samples=8)
+    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
+    
     features_array = np.array(All_feature)
     point_array = np.array(All_point)
+    
+    # ============ 修正：保存为正确的数值数组 ============
+    # 将列表转换为三维numpy数组 (帧数, 17, 2)
+    if All_normalized_points:
+        # 确保所有元素都是相同形状的numpy数组
+        normalized_array = np.stack(All_normalized_points, axis=0)
+        print(f"归一化关键点数组形状: {normalized_array.shape}")
+        print(f"数据类型: {normalized_array.dtype}")
+        
+        # 保存为纯数值数组
+        np.save(f'result/features/{video_name}_normalized_points.npy', normalized_array)
+        print(f"归一化关键点已保存: result/features/{video_name}_normalized_points.npy")
+    else:
+        print("警告: 没有归一化关键点数据")
+    
     print("="*60)
     print("特征列表大小为：")
     print(features_array.shape)
     print("关键点列表大小为：")
     print(point_array.shape)
     print("="*60)
+    
     np.save(f'result/features/{video_name}_features.npy', features_array)
-    np.save(f'result/features/{video_name}_point.npy', point_array)
+    np.save(f'result/features/{video_name}_points.npy', point_array)
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
