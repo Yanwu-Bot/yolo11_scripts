@@ -185,7 +185,7 @@ class Feature:
         获取所有特征：原来的17维 + 中心 + β(2维) + γ(4维) = 27维
         返回: 列表
         """
-        part_angles = self.get_part_angle()   # 17维列表
+        part_angles = self.get_part_angle()   # 24维列表
         center = self.get_center()            # 8维列表
         beta = self.get_beta_features()       # 2维列表
         gamma = self.get_gamma_features()     # 4维列表
