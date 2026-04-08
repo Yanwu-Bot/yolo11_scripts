@@ -22,7 +22,7 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_woman.mp4'
+input_path = 'video_origin/data_video/use/run_wrong.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
@@ -156,7 +156,7 @@ def normalize_keypoints(p_pos, target_torso_length=100):
     
     # 计算躯干长度
     torso_length = math.sqrt((shoulder_center_x - hip_center_x)**2 + 
-                              (shoulder_center_y - hip_center_y)**2)
+                            (shoulder_center_y - hip_center_y)**2)
     
     if torso_length < 1e-6:
         return p_pos
@@ -465,9 +465,11 @@ def generate_video(input_path):
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
     frames = list(range(2, frame_count + 1))
     print(len(Max_acc))
-    eps = auto_eps(Max_acc, 7)
+    #自动eps
+    eps = auto_eps(Max_acc, 10)
     print(f"当前自动eps为{eps}")
-    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
+
+    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=10)
     
     features_array = np.array(All_feature)
     point_array = np.array(All_point)

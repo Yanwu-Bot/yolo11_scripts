@@ -1,8 +1,9 @@
 #用于DTW的多维特征
 from utill import *
+import numpy as np
 
 class Feature:
-    def __init__(self,p_pos):
+    def __init__(self, p_pos):
         '''
         p_pos:关键点坐标列表
         '''
@@ -26,6 +27,7 @@ class Feature:
         self.r_knee = p_pos[14]                           #右膝    
         self.l_foot = p_pos[15]                           #左脚
         self.r_foot = p_pos[16]                           #右脚
+        
         shoulder_vec = np.array(self.r_shoulder) - np.array(self.l_shoulder)
         self.shoulder_width = float(np.linalg.norm(shoulder_vec))
         self.spine_vec = np.array(self.hip_center) - np.array(self.neck)
@@ -33,7 +35,7 @@ class Feature:
         self.front_vec = np.array([0, 1])  # 假设Y轴向前
 
     #获取中心点
-    def get_main_center(self,point_list):
+    def get_main_center(self, point_list):
         x_sum = 0
         y_sum = 0
         for pair in point_list:
@@ -41,15 +43,14 @@ class Feature:
             y_sum += pair[1]
         x_avg = x_sum/len(point_list)
         y_avg = y_sum/len(point_list)
-        point = [x_avg,y_avg]
+        point = [x_avg, y_avg]
         return point
-    
     
     def get_part_angle(self):
         """
-        夹角归一化特征
+        夹角特征：除以180归一化到[0, 1]区间
+        注意：假设所有角度都在0-180度范围内
         """
-        angles = []
         angle_list = [
             calculate_angle(self.thorax, self.neck, self.r_shoulder),
             calculate_angle(self.thorax, self.neck, self.l_shoulder),
@@ -77,23 +78,18 @@ class Feature:
             calculate_angle(self.l_hip, self.l_knee, self.l_foot),
         ]
         
-        # 转成弧度制并归一化
-        for angle in angle_list:
-            rad = math.radians(angle)
-            angles.append(rad)
+        # 固定范围归一化到[0, 1]，假设角度范围0-180度
+        # 注意：如果某些角度可能大于180，需要调整这个最大值
+        MAX_ANGLE = 180.0
+        normalized_angles = [min(a / MAX_ANGLE, 1.0) for a in angle_list]
         
-        min_angle = min(angles)
-        max_angle = max(angles)
-        if max_angle > min_angle:  # 避免除零错误
-            normalized_angles = [(a - min_angle) / (max_angle - min_angle) for a in angles]
-        else:
-            normalized_angles = [0.5] * len(angles)  # 所有角度相等的情况
         return normalized_angles
-        
+                
     def get_center(self):
         """
         获取基于脊柱长度归一化的中心点坐标
         返回: 8个归一化后的数值 [x1,y1,x2,y2,x3,y3,x4,y4]
+        范围：通常在[-3, 3]之间，使用tanh压缩到[-1, 1]
         """
         try:
             # 计算原始中心点
@@ -107,15 +103,17 @@ class Feature:
             if spine_length == 0:
                 return [0.0] * 8
             
-            # 使用脖子
+            # 使用脖子作为参考点
             ref_x, ref_y = self.neck[0], self.neck[1]
             
-            # 归一化所有中心点
+            # 归一化所有中心点，并用tanh压缩到[-1, 1]
             normalized = []
             for center in [center1, center2, center3, center4]:
                 rel_x = (center[0] - ref_x) / spine_length
                 rel_y = (center[1] - ref_y) / spine_length
-                normalized.extend([rel_x, rel_y])
+                # 使用tanh压缩，避免极端值影响
+                # tanh(3) ≈ 0.995，所以[-3,3]范围内的值会被映射到[-0.995, 0.995]
+                normalized.extend([np.tanh(rel_x), np.tanh(rel_y)])
             
             return normalized
             
@@ -126,69 +124,64 @@ class Feature:
     def get_beta_features(self):
         """
         2维身体朝向特征
-        返回: [β₁, β₂] 列表
+        返回: [β₁, β₂] 列表，范围都在[0, 1]
         """
         betas = []
-        # β₁: 身体前倾角度 
-        # 计算: 脊柱向量与垂直轴的夹角
-        vertical_point = [self.neck[0], self.neck[1] + 100]   #脖子正下方的点
-        beta1 = calculate_angle(vertical_point,self.neck,self.hip_center)
-        betas.append(beta1)  # 0-90度，越小越直立
         
-        # β₂: 两脚间距离
-        dx = self.l_foot[0] - self.r_foot[0]  # x坐标差
-        dy = self.l_foot[1] - self.r_foot[1]  # y坐标差
-        foot_dist = (dx*dx + dy*dy) ** 0.5     # 欧氏距离 = √(dx² + dy²)
-        beta2 = foot_dist / (self.spine_width + 1e-6)  # 用脊柱归一化
-        betas.append(beta2)
+        # β₁: 身体前倾角度，除以90归一化到[0, 1]
+        vertical_point = [self.neck[0], self.neck[1] + 100]
+        beta1 = calculate_angle(vertical_point, self.neck, self.hip_center)
+        betas.append(min(beta1 / 90.0, 1.0))  # 0-90度 → 0-1
+        
+        # β₂: 两脚间距离，用脊柱归一化，然后压缩到[0, 1]
+        dx = self.l_foot[0] - self.r_foot[0]
+        dy = self.l_foot[1] - self.r_foot[1]
+        foot_dist = (dx*dx + dy*dy) ** 0.5
+        beta2_raw = foot_dist / (self.spine_width + 1e-6)
+        # 假设最大步宽不会超过脊柱长度的2倍，使用tanh压缩
+        betas.append(np.tanh(beta2_raw / 2.0))  # 映射到[0, 1)
         
         return betas
 
-    def get_gamma_features(self, prev_frame=None):
+    def get_gamma_features(self):
         """
         跑步专用的4维对侧协调特征
-        返回: [γ₁, γ₂, γ₃, γ₄] 列表
-        γ₁: 左臂相位
-        γ₂: 右臂相位  
-        γ₃: 左腿相位
-        γ₄: 右腿相位
+        返回: [γ₁, γ₂, γ₃, γ₄] 列表，范围在[-1, 1]
         """
-        # 计算四肢的"相位"（前/后位置）
+        # 计算四肢相对于躯干的位移（像素单位）
+        left_arm_phase = self.l_hand[0] - self.l_shoulder[0]
+        right_arm_phase = self.r_hand[0] - self.r_shoulder[0]
+        left_leg_phase = self.l_foot[0] - self.l_hip[0]
+        right_leg_phase = self.r_foot[0] - self.r_hip[0]
         
-        # 左臂相位: 左手相对于左肩的前后位置
-        left_arm_phase = (self.l_hand[0] - self.l_shoulder[0])  # X轴前后
+        # 使用脊柱宽度作为参考长度来归一化（使特征与人体尺度无关）
+        spine_len = self.spine_width + 1e-6
         
-        # 右臂相位
-        right_arm_phase = (self.r_hand[0] - self.r_shoulder[0])
+        left_arm_norm = left_arm_phase / spine_len
+        right_arm_norm = right_arm_phase / spine_len
+        left_leg_norm = left_leg_phase / spine_len
+        right_leg_norm = right_leg_phase / spine_len
         
-        # 左腿相位: 左脚相对于左髋的前后位置
-        left_leg_phase = (self.l_foot[0] - self.l_hip[0])
-        
-        # 右腿相位
-        right_leg_phase = (self.r_foot[0] - self.r_hip[0])
-        
-        # 归一化到[-1, 1]范围
-        max_val = max(abs(left_arm_phase), abs(right_arm_phase), 
-                    abs(left_leg_phase), abs(right_leg_phase)) + 1e-6
-        
+        # 用tanh压缩到[-1, 1]，假设相对位移通常在[-2, 2]范围内
         gamma = [
-            left_arm_phase / (max_val + 1e-6),
-            right_arm_phase / (max_val + 1e-6),
-            left_leg_phase / (max_val + 1e-6),
-            right_leg_phase / (max_val + 1e-6)
+            np.tanh(left_arm_norm),
+            np.tanh(right_arm_norm),
+            np.tanh(left_leg_norm),
+            np.tanh(right_leg_norm)
         ]
         
         return gamma
     
     def get_all_features(self):
         """
-        获取所有特征：原来的17维 + 中心 + β(2维) + γ(4维) = 27维
-        返回: 列表
+        获取所有特征：24维角度 + 8维中心 + 2维beta + 4维gamma = 38维
+        所有特征都已经归一化到[-1, 1]或[0, 1]范围
+        返回: 38维列表
         """
-        part_angles = self.get_part_angle()   # 24维列表
-        center = self.get_center()            # 8维列表
-        beta = self.get_beta_features()       # 2维列表
-        gamma = self.get_gamma_features()     # 4维列表
+        part_angles = self.get_part_angle()   # 24维，范围[0, 1]
+        center = self.get_center()            # 8维，范围[-1, 1]
+        beta = self.get_beta_features()       # 2维，范围[0, 1]
+        gamma = self.get_gamma_features()     # 4维，范围[-1, 1]
         
-        all_features = part_angles + center + beta + gamma  # 列表拼接
-        return all_features  # 27维列表
+        all_features = part_angles + center + beta + gamma
+        return all_features

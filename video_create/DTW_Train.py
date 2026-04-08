@@ -1,3 +1,4 @@
+#训练特征权重
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -395,7 +396,6 @@ if __name__ == '__main__':
         print("="*60)
         weighted_score = evaluator.get_weighted_score(anomaly_coefficient=0)
         print(f"加权特征得分: {weighted_score:.2f}")
-        
         print("\n" + "="*60)
         print("结果对比")
         print("="*60)
