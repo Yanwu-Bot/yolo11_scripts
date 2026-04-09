@@ -149,24 +149,31 @@ class VideoScoreEvaluator:
         
         return normalized
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 3) -> float:
         """计算单帧得分（特征已经归一化，直接使用）"""
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
         q_mean = np.sum(q * f_weights)
         
         if q_mean <= t:
-            score = 100.0
-        elif q_mean - t <= 0.3:
-            exceed = q_mean - t
-            score = 100 * np.exp(-2.5 * exceed)
-        elif 0.3 < q_mean - t <= 1:
-            exceed = q_mean - t
-            score = 100 * np.exp(-5 * exceed)
+            return 100.0
         else:
-            score = 0.0
+            exceed = q_mean - t
+            # 调整k值控制衰减速度，k越大衰减越快
+            score = 100 * np.exp(-k * exceed)
+        return max(0, score)  # 不低于0
+        # if q_mean <= t:
+        #     score = 100.0
+        # elif q_mean - t <= 0.3:
+        #     exceed = q_mean - t
+        #     score = 100 * np.exp(-2.5 * exceed)
+        # elif 0.3 < q_mean - t <= 1:
+        #     exceed = q_mean - t
+        #     score = 100 * np.exp(-5 * exceed)
+        # else:
+        #     score = 0.0
         
-        return score
+        # return score
     
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> tuple:
         """计算整个视频的得分（特征已经归一化，直接使用）"""
