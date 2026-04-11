@@ -22,7 +22,7 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_wrong.mp4'
+input_path = 'video_origin/data_video/use/run_woman.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
@@ -466,11 +466,10 @@ def generate_video(input_path):
     frames = list(range(2, frame_count + 1))
     print(len(Max_acc))
     #自动eps
-    eps = auto_eps(Max_acc, 10)
+    eps = auto_eps(Max_acc, 8)
     print(f"当前自动eps为{eps}")
+    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
 
-    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=10)
-    
     features_array = np.array(All_feature)
     point_array = np.array(All_point)
     

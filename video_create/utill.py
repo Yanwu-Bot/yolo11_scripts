@@ -408,19 +408,15 @@ def calculate_angle(point_a, point_b, point_c):
 def acceleration(current_point, previous_point, time_gap):
     """
     计算两个连续帧之间关键点的加速度
-    参考video.py中的加速度计算逻辑
     """
     # 计算位移
     dx = current_point[0] - previous_point[0]
     dy = current_point[1] - previous_point[1]
     displacement = math.sqrt(dx**2 + dy**2)
-    
-    # 计算速度（假设上一帧速度为瞬时速度）
+    # 计算速度
     velocity = displacement / time_gap if time_gap > 0 else 0
-    
     # 加速度计算
     acceleration = velocity / time_gap if time_gap > 0 else 0
-    
     return acceleration
 
 class KeypointTrajectoryTracker:

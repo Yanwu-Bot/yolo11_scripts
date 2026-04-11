@@ -48,8 +48,7 @@ class Feature:
     
     def get_part_angle(self):
         """
-        夹角特征：除以180归一化到[0, 1]区间
-        注意：假设所有角度都在0-180度范围内
+        夹角特征
         """
         angle_list = [
             calculate_angle(self.thorax, self.neck, self.r_shoulder),
@@ -78,10 +77,8 @@ class Feature:
             calculate_angle(self.l_hip, self.l_knee, self.l_foot),
         ]
         
-        # 固定范围归一化到[0, 1]，假设角度范围0-180度
-        # 注意：如果某些角度可能大于180，需要调整这个最大值
         MAX_ANGLE = 180.0
-        normalized_angles = [min(a / MAX_ANGLE, 1.0) for a in angle_list]
+        normalized_angles = [min(a / MAX_ANGLE,1) for a in angle_list]
         
         return normalized_angles
                 

@@ -149,7 +149,7 @@ class VideoScoreEvaluator:
         
         return normalized
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 5) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> float:
         """计算单帧得分（特征已经归一化，直接使用）"""
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
@@ -219,15 +219,15 @@ class VideoScoreEvaluator:
         mu_array = np.array(mu_list)
         sigma_array = np.sqrt(np.array(sigma_squared_list)) #sigma标准差
         # 帧得分标准差（动作变化）
-        action_std = np.std(mu_array)
+        action_std = min(np.std(mu_array),3)
         # 平均评委分歧
         judge_std = np.mean(sigma_array)
         # 综合不确定性
         sigma_video = np.sqrt(action_std**2 + judge_std**2)
         mu_fuse = np.mean(mu_array)
         #1.96sigma是95%置信区间
-        lower_bound = mu_fuse - 1.96 * np.sqrt(sigma_video) #置信下限
-        upper_bound = mu_fuse + 1.96 * np.sqrt(sigma_video) #置信上限
+        lower_bound = mu_fuse - 1.96 * sigma_video #置信下限
+        upper_bound = mu_fuse + 1.96 * sigma_video #置信上限
 
         final_score = mu_fuse
         return final_score, frame_scores, path, q_mean_list,lower_bound,upper_bound
@@ -565,7 +565,7 @@ if __name__ == '__main__':
     # 创建评分器实例
     evaluator = VideoScoreEvaluator(
         template_video='run_man.mp4',
-        test_video='run_wrong.mp4',
+        test_video='run_woman.mp4',
         features_dir='result/features',
         video_dir='video_origin/data_video/use',
         weight={"fea": 0.7, "point": 0.3}
