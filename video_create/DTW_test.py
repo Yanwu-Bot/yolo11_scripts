@@ -149,31 +149,47 @@ class VideoScoreEvaluator:
         
         return normalized
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 5) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> float:
         """计算单帧得分（特征已经归一化，直接使用）"""
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
         q_mean = np.sum(q * f_weights)
-        
+        exceed = q_mean - t
         if q_mean <= t:
-            return 100.0
+            mu = 100.0
         else:
-            exceed = q_mean - t
             # 调整k值控制衰减速度，k越大衰减越快
-            score = 100 * np.exp(-k * exceed)
-        return max(0, score)  # 不低于0
-        # if q_mean <= t:
-        #     score = 100.0
-        # elif q_mean - t <= 0.3:
-        #     exceed = q_mean - t
-        #     score = 100 * np.exp(-2.5 * exceed)
-        # elif 0.3 < q_mean - t <= 1:
-        #     exceed = q_mean - t
-        #     score = 100 * np.exp(-5 * exceed)
-        # else:
-        #     score = 0.0
+            mu = 100 * np.exp(-k * exceed)
+        sigma_squared = 9.0 + 0.016 * mu * (100 - mu)
+        # 确保方差不为0
+        sigma_squared = max(sigma_squared, 1.0)
+        return mu,sigma_squared
+    
+    # def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 3) -> float:
+    #     """计算单帧得分（特征已经归一化，直接使用）"""
+    #     f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
+    #     q = np.abs(test_feat - template_feat)
+    #     q_mean = np.sum(q * f_weights)
+    #     print(q_mean)
+    #     if q_mean <= t:
+    #         return 100.0
+    #     else:
+    #         exceed = q_mean - t
+    #         # 调整k值控制衰减速度，k越大衰减越快
+    #         score = 100 * np.exp(-k * exceed)
+    #     return max(0, score)  # 不低于0
+    #     # if q_mean <= t:
+    #     #     score = 100.0
+    #     # elif q_mean - t <= 0.3:
+    #     #     exceed = q_mean - t
+    #     #     score = 100 * np.exp(-2.5 * exceed)
+    #     # elif 0.3 < q_mean - t <= 1:
+    #     #     exceed = q_mean - t
+    #     #     score = 100 * np.exp(-5 * exceed)
+    #     # else:
+    #     #     score = 0.0
         
-        # return score
+    #     # return score
     
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> tuple:
         """计算整个视频的得分（特征已经归一化，直接使用）"""
@@ -184,6 +200,8 @@ class VideoScoreEvaluator:
         
         frame_scores = []
         q_mean_list = []
+        mu_list = []
+        sigma_squared_list = []
         
         for test_idx, template_idx in path:
             test_frame = test_features[test_idx]
@@ -193,11 +211,26 @@ class VideoScoreEvaluator:
             q_mean = np.mean(q)
             q_mean_list.append(q_mean)
             
-            score = self.calculate_frame_score(test_frame, template_frame)
+            score,sigma_squared = self.calculate_frame_score(test_frame, template_frame)
+            mu_list.append(score)
+            sigma_squared_list.append(sigma_squared)
             frame_scores.append(score)
-        
-        final_score = np.mean(frame_scores)
-        return final_score, frame_scores, path, q_mean_list
+        #贝叶斯融合
+        mu_array = np.array(mu_list)
+        sigma_array = np.sqrt(np.array(sigma_squared_list)) #sigma标准差
+        # 帧得分标准差（动作变化）
+        action_std = min(np.std(mu_array),3)
+        # 平均评委分歧
+        judge_std = np.mean(sigma_array)
+        # 综合不确定性
+        sigma_video = np.sqrt(action_std**2 + judge_std**2)
+        mu_fuse = np.mean(mu_array)
+        #1.96sigma是95%置信区间
+        lower_bound = mu_fuse - 1.96 * sigma_video #置信下限
+        upper_bound = mu_fuse + 1.96 * sigma_video #置信上限
+
+        final_score = mu_fuse
+        return final_score, frame_scores, path, q_mean_list,lower_bound,upper_bound
     
     def calculate_keypoint_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
         """计算关键点的DTW评分"""
@@ -271,7 +304,7 @@ class VideoScoreEvaluator:
         print("\n特征已预先归一化，直接进行DTW对齐...")
         
         # 特征评分
-        self.feat_score, self.frame_scores, self.path, self.q_mean_list = \
+        self.feat_score, self.frame_scores, self.path, self.q_mean_list, self.lower_bound, self.upper_bound = \
             self.calculate_video_score(self.test_features, self.template_features)
         
         print(f"\n特征得分: {self.feat_score:.2f}")
@@ -524,9 +557,9 @@ class VideoScoreEvaluator:
             print(f"关键点得分: {self.point_score:.2f}")
         print(f"{'='*60}")
         print(f"综合得分: {self.get_combined_score():.2f}")
+        print(f"区间范围：{(self.lower_bound*self.weight['fea']+self.point_score*self.weight['point']):.2f}--{(self.upper_bound*self.weight['fea']+self.point_score*self.weight['point']):.2f}")
         print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}")
         print(f"{'='*60}")
-
 
 if __name__ == '__main__':
     # 创建评分器实例
@@ -537,19 +570,15 @@ if __name__ == '__main__':
         video_dir='video_origin/data_video/use',
         weight={"fea": 0.7, "point": 0.3}
     )
-    
     # 运行评分
     evaluator.score_video()
-    
     # 可视化结果
     evaluator.plot_qmean_over_time(t=0.05)
     evaluator.plot_dist_over_time()
     evaluator.visualize_alignment_path()
-    
     # 可视化指定对齐帧
     VIEW_FRAME = 232
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
-    
     # 打印摘要
     evaluator.print_summary()

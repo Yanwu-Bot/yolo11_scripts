@@ -32,7 +32,7 @@ class VideoScoreEvaluator:
             test_video: 测试视频文件名
             features_dir: 特征文件目录
             video_dir: 视频文件目录
-            weight: 评分权重 {'fea': float, 'point': float}
+            weight: 评分权重 {'fea': float, 'point': float, 'displacement': float}
         """
         self.template_video = template_video
         self.test_video = test_video
@@ -40,7 +40,7 @@ class VideoScoreEvaluator:
         self.video_dir = video_dir
         
         # 设置默认权重
-        self.weight = weight if weight else {"fea": 0.7, "point": 0.3}
+        self.weight = weight if weight else {"fea": 0.7, "point": 0.3, "displacement": 0.2}
         
         # 特征权重配置（用于计算帧得分时的加权）
         self.angle_weights = [1] * 24
@@ -55,12 +55,14 @@ class VideoScoreEvaluator:
         # 存储结果
         self.feat_score = None
         self.point_score = None
+        self.displacement_score = None
         self.frame_scores = None
         self.path = None
         self.q_mean_list = None
         self.point_distances = None
         self.test_features = None
         self.template_features = None
+        self.displacement_frame_scores = None
         
         # 视频路径
         self.template_video_path = None
@@ -149,7 +151,7 @@ class VideoScoreEvaluator:
         
         return normalized
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> tuple:
         """计算单帧得分（特征已经归一化，直接使用）"""
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
@@ -163,33 +165,20 @@ class VideoScoreEvaluator:
         sigma_squared = 9.0 + 0.016 * mu * (100 - mu)
         # 确保方差不为0
         sigma_squared = max(sigma_squared, 1.0)
-        return mu,sigma_squared
+        return mu, sigma_squared
     
-    # def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 3) -> float:
-    #     """计算单帧得分（特征已经归一化，直接使用）"""
-    #     f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
-    #     q = np.abs(test_feat - template_feat)
-    #     q_mean = np.sum(q * f_weights)
-    #     print(q_mean)
-    #     if q_mean <= t:
-    #         return 100.0
-    #     else:
-    #         exceed = q_mean - t
-    #         # 调整k值控制衰减速度，k越大衰减越快
-    #         score = 100 * np.exp(-k * exceed)
-    #     return max(0, score)  # 不低于0
-    #     # if q_mean <= t:
-    #     #     score = 100.0
-    #     # elif q_mean - t <= 0.3:
-    #     #     exceed = q_mean - t
-    #     #     score = 100 * np.exp(-2.5 * exceed)
-    #     # elif 0.3 < q_mean - t <= 1:
-    #     #     exceed = q_mean - t
-    #     #     score = 100 * np.exp(-5 * exceed)
-    #     # else:
-    #     #     score = 0.0
-        
-    #     # return score
+    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.05, k: float = 4) -> tuple:
+        """计算单帧位移得分（与特征评分相同的逻辑）"""
+        q = np.abs(test_vec - template_vec)
+        q_mean = np.mean(q)
+        exceed = q_mean - t
+        if q_mean <= t:
+            mu = 100.0
+        else:
+            mu = 100 * np.exp(-k * exceed)
+        sigma_squared = 9.0 + 0.016 * mu * (100 - mu)
+        sigma_squared = max(sigma_squared, 1.0)
+        return mu, sigma_squared
     
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> tuple:
         """计算整个视频的得分（特征已经归一化，直接使用）"""
@@ -211,26 +200,33 @@ class VideoScoreEvaluator:
             q_mean = np.mean(q)
             q_mean_list.append(q_mean)
             
-            score,sigma_squared = self.calculate_frame_score(test_frame, template_frame)
+            score, sigma_squared = self.calculate_frame_score(test_frame, template_frame)
             mu_list.append(score)
             sigma_squared_list.append(sigma_squared)
             frame_scores.append(score)
-        #贝叶斯融合
+        
+        # ========== 修改部分开始 ==========
         mu_array = np.array(mu_list)
-        sigma_array = np.sqrt(np.array(sigma_squared_list)) #sigma标准差
-        # 帧得分标准差（动作变化）
-        action_std = min(np.std(mu_array),3)
-        # 平均评委分歧
-        judge_std = np.mean(sigma_array)
-        # 综合不确定性
-        sigma_video = np.sqrt(action_std**2 + judge_std**2)
-        mu_fuse = np.mean(mu_array)
-        #1.96sigma是95%置信区间
-        lower_bound = mu_fuse - 1.96 * sigma_video #置信下限
-        upper_bound = mu_fuse + 1.96 * sigma_video #置信上限
+        var_array = np.array(sigma_squared_list)  # 每帧的方差
+        
+        precision = 1.0 / var_array  # 精度 = 1/方差
+        total_precision = np.sum(precision)
+
+        mu_fuse = np.sum(mu_array * precision) / total_precision
+        
+        sigma_fuse_squared = 1.0 / total_precision
+        
+        action_std = min(np.std(mu_array), 3.0)  # 限制最大影响
+
+        sigma_video = np.sqrt(sigma_fuse_squared + action_std**2)
+        
+        # 3. 95% 置信区间
+        lower_bound = mu_fuse - 1.96 * sigma_video
+        upper_bound = mu_fuse + 1.96 * sigma_video
+        # ========== 修改部分结束 ==========
 
         final_score = mu_fuse
-        return final_score, frame_scores, path, q_mean_list,lower_bound,upper_bound
+        return final_score, frame_scores, path, q_mean_list, lower_bound, upper_bound
     
     def calculate_keypoint_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
         """计算关键点的DTW评分"""
@@ -283,6 +279,10 @@ class VideoScoreEvaluator:
                                         f"{os.path.splitext(self.template_video)[0]}_normalized_points.npy")
         test_point_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_normalized_points.npy")
+        template_vector_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.template_video)[0]}_vector.npy")
+        test_vector_path = os.path.join(self.features_dir, 
+                                        f"{os.path.splitext(self.test_video)[0]}_vector.npy")
         
         # 检查特征文件是否存在
         if not os.path.exists(template_feat_path) or not os.path.exists(test_feat_path):
@@ -337,6 +337,39 @@ class VideoScoreEvaluator:
             print(f"\n关键点得分: {self.point_score:.2f}")
         else:
             print("\n警告: 找不到关键点文件，跳过关键点评分")
+        
+        # ========== 新增：位移向量评分 ==========
+        self.displacement_score = 0.0
+        self.displacement_frame_scores = None
+        
+        if os.path.exists(template_vector_path) and os.path.exists(test_vector_path):
+            print("\n" + "="*60)
+            print("开始计算位移向量评分")
+            print("="*60)
+            
+            template_vector = np.load(template_vector_path)
+            test_vector = np.load(test_vector_path)
+            
+            # 展平为 (帧数, 51)
+            test_vector_flat = test_vector.reshape(test_vector.shape[0], -1)
+            template_vector_flat = template_vector.reshape(template_vector.shape[0], -1)
+            
+            print(f"模板位移形状: {template_vector_flat.shape}")
+            print(f"测试位移形状: {test_vector_flat.shape}")
+            
+            # 复用特征评分的DTW路径，计算位移得分
+            displacement_scores = []
+            for test_idx, template_idx in self.path:
+                test_frame = test_vector_flat[test_idx]
+                template_frame = template_vector_flat[template_idx]
+                score, _ = self.calculate_displacement_frame_score(test_frame, template_frame)
+                displacement_scores.append(score)
+            # 直接平均
+            self.displacement_score = np.mean(displacement_scores)
+            self.displacement_frame_scores = displacement_scores
+
+            print(f"位移得分: {self.displacement_score:.2f}")
+        # ========== 新增结束 ==========
         
         return (self.feat_score, self.point_score, self.frame_scores, self.path, 
                 self.q_mean_list, self.test_features, self.template_features, self.point_distances)
@@ -429,6 +462,39 @@ class VideoScoreEvaluator:
         print(f"中位数: {np.median(self.point_distances):.4f}")
         print(f"最小值: {min(self.point_distances):.4f}")
         print(f"最大值: {max(self.point_distances):.4f}")
+    
+    def plot_displacement_over_time(self):
+        """绘制位移得分随时间变化的图"""
+        if self.displacement_frame_scores is None:
+            print("没有位移得分数据，请先运行 score_video()")
+            return
+        
+        plt.figure(figsize=(14, 6))
+        
+        x = np.arange(len(self.displacement_frame_scores))
+        
+        plt.plot(x, self.displacement_frame_scores, 'g-', linewidth=2, label='位移帧得分', alpha=0.8)
+        
+        mean_score = np.mean(self.displacement_frame_scores)
+        plt.axhline(y=mean_score, color='orange', linestyle='--', linewidth=2, 
+                    label=f'均值: {mean_score:.2f}')
+        
+        plt.xlabel('对齐对序号', fontsize=12)
+        plt.ylabel('位移得分', fontsize=12)
+        plt.title('位移向量得分随时间变化图', fontsize=14)
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        
+        print("\n" + "="*40)
+        print("位移得分统计")
+        print("="*40)
+        print(f"均值: {np.mean(self.displacement_frame_scores):.2f}")
+        print(f"标准差: {np.std(self.displacement_frame_scores):.2f}")
+        print(f"中位数: {np.median(self.displacement_frame_scores):.2f}")
+        print(f"最小值: {min(self.displacement_frame_scores):.2f}")
+        print(f"最大值: {max(self.displacement_frame_scores):.2f}")
     
     def visualize_alignment_path(self):
         """可视化DTW对齐路径"""
@@ -536,8 +602,10 @@ class VideoScoreEvaluator:
             return 0.0
         
         point_score = self.point_score if self.point_score is not None else 0.0
+        displacement_score = self.displacement_score if self.displacement_score is not None else 0.0
         combined_score = (self.feat_score * self.weight['fea'] + 
-                         point_score * self.weight['point'])
+                         point_score * self.weight['point'] +
+                         displacement_score * self.weight['displacement'])
         return combined_score
     
     def print_summary(self):
@@ -555,11 +623,14 @@ class VideoScoreEvaluator:
         print(f"特征得分: {self.feat_score:.2f}")
         if self.point_score is not None:
             print(f"关键点得分: {self.point_score:.2f}")
+        if self.displacement_score is not None:
+            print(f"位移得分: {self.displacement_score:.2f}")
         print(f"{'='*60}")
         print(f"综合得分: {self.get_combined_score():.2f}")
-        print(f"区间范围：{(self.lower_bound*self.weight['fea']+self.point_score*self.weight['point']):.2f}--{(self.upper_bound*self.weight['fea']+self.point_score*self.weight['point']):.2f}")
-        print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}")
+        print(f"区间范围：{(self.lower_bound*self.weight['fea']+self.point_score*self.weight['point']+self.displacement_score*self.weight['displacement']):.2f}--{(self.upper_bound*self.weight['fea']+self.point_score*self.weight['point']+self.displacement_score*self.weight['displacement']):.2f}")
+        print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}, displacement={self.weight['displacement']}")
         print(f"{'='*60}")
+
 
 if __name__ == '__main__':
     # 创建评分器实例
@@ -568,13 +639,14 @@ if __name__ == '__main__':
         test_video='run_woman.mp4',
         features_dir='result/features',
         video_dir='video_origin/data_video/use',
-        weight={"fea": 0.7, "point": 0.3}
+        weight={"fea": 0.5, "point": 0.3, "displacement": 0.2}
     )
     # 运行评分
     evaluator.score_video()
     # 可视化结果
     evaluator.plot_qmean_over_time(t=0.05)
     evaluator.plot_dist_over_time()
+    evaluator.plot_displacement_over_time()
     evaluator.visualize_alignment_path()
     # 可视化指定对齐帧
     VIEW_FRAME = 232
