@@ -6,8 +6,6 @@ from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
-
-
 class VideoScoreEvaluator:
     """
     视频动作质量评分器
@@ -146,7 +144,6 @@ class VideoScoreEvaluator:
                     normalized[i, j, 1] = (frame_kps[j, 1] - reference[1]) / scale
                 else:
                     normalized[i, j] = [0, 0]
-        
         return normalized
     
     def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> float:
@@ -249,10 +246,8 @@ class VideoScoreEvaluator:
         # 计算DTW距离和路径
         distance, path = fastdtw(test_flat, template_flat, dist=euclidean)
         path = np.array(path)
-        
         print(f"关键点DTW距离: {distance:.4f}")
         print(f"对齐路径长度: {len(path)}")
-        
         # 计算每对对齐帧的得分和距离
         frame_scores = []
         frame_distances = []

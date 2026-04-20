@@ -167,10 +167,12 @@ class VideoScoreEvaluator:
         sigma_squared = max(sigma_squared, 1.0)
         return mu, sigma_squared
     
-    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.05, k: float = 4) -> tuple:
+    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 4) -> tuple:
         """计算单帧位移得分（与特征评分相同的逻辑）"""
         q = np.abs(test_vec - template_vec)
         q_mean = np.mean(q)
+        print(111111111)
+        print(q_mean)
         exceed = q_mean - t
         if q_mean <= t:
             mu = 100.0
@@ -338,25 +340,14 @@ class VideoScoreEvaluator:
         else:
             print("\n警告: 找不到关键点文件，跳过关键点评分")
         
-        # ========== 新增：位移向量评分 ==========
         self.displacement_score = 0.0
         self.displacement_frame_scores = None
         
         if os.path.exists(template_vector_path) and os.path.exists(test_vector_path):
-            print("\n" + "="*60)
-            print("开始计算位移向量评分")
-            print("="*60)
-            
             template_vector = np.load(template_vector_path)
             test_vector = np.load(test_vector_path)
-            
-            # 展平为 (帧数, 51)
             test_vector_flat = test_vector.reshape(test_vector.shape[0], -1)
-            template_vector_flat = template_vector.reshape(template_vector.shape[0], -1)
-            
-            print(f"模板位移形状: {template_vector_flat.shape}")
-            print(f"测试位移形状: {test_vector_flat.shape}")
-            
+            template_vector_flat = template_vector.reshape(template_vector.shape[0], -1)   
             # 复用特征评分的DTW路径，计算位移得分
             displacement_scores = []
             for test_idx, template_idx in self.path:
@@ -367,9 +358,8 @@ class VideoScoreEvaluator:
             # 直接平均
             self.displacement_score = np.mean(displacement_scores)
             self.displacement_frame_scores = displacement_scores
-
             print(f"位移得分: {self.displacement_score:.2f}")
-        # ========== 新增结束 ==========
+
         
         return (self.feat_score, self.point_score, self.frame_scores, self.path, 
                 self.q_mean_list, self.test_features, self.template_features, self.point_distances)
