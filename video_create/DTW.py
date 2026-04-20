@@ -639,7 +639,7 @@ if __name__ == '__main__':
     evaluator.plot_displacement_over_time()
     evaluator.visualize_alignment_path()
     # 可视化指定对齐帧
-    VIEW_FRAME = 232
+    VIEW_FRAME = 1
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 打印摘要

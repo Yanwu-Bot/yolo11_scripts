@@ -459,20 +459,23 @@ def generate_video(input_path):
             cap.release()
         print('\n视频处理完成')
         print('Video saved to:', output_path)
-    # 绘制轨迹曲线
-    trajectory_tracker.plot_trajectory_curves(
-        save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
-    )
-    trajectory_tracker.export_trajectory_data(
-        csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
-    )
+    # # 绘制轨迹曲线
+    # trajectory_tracker.plot_trajectory_curves(
+    #     save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
+    # )
+    # trajectory_tracker.export_trajectory_data(
+    #     csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
+    # )
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
     frames = list(range(2, frame_count + 1))
     print(len(Max_acc))
+
+    #===================================
     #自动eps
     eps = auto_eps(Max_acc, 8)
     print(f"当前自动eps为{eps}")
     wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
+    #===================================
 
     features_array = np.array(All_feature)
     point_array = np.array(All_point)
@@ -494,13 +497,6 @@ def generate_video(input_path):
         print(f"归一化关键点已保存: result/features/{video_name}_normalized_points.npy")
     else:
         print("警告: 没有归一化关键点数据")
-    
-    print("="*60)
-    print("特征列表大小为：")
-    print(features_array.shape)
-    print("关键点列表大小为：")
-    print(point_array.shape)
-    print("="*60)
     
     np.save(f'result/features/{video_name}_features.npy', features_array)
     np.save(f'result/features/{video_name}_points.npy', point_array)

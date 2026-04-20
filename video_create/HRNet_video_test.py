@@ -22,11 +22,10 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_woman.mp4'
+input_path = 'video_origin/data_video/use/run_man.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
-# ========== 新增：窗口大小参数 ==========
-WINDOW_SIZE = 3  # 可调整：1, 3, 5, 等
+WINDOW_SIZE = 3  # 可调整窗口大小
 
 trajectory_tracker = KeypointTrajectoryTracker(
     num_keypoints=17,
@@ -387,36 +386,28 @@ def process_frame(img, preview=True, normalize_for_storage=True):
 def compute_displacement_features(normalized_points_array, window_size=WINDOW_SIZE):
     """
     离线计算位移特征（支持窗口堆叠）
-    
     Args:
         normalized_points_array: 形状 (帧数, 17, 2) 的归一化关键点数组
         window_size: 窗口大小，堆叠 window_size 个位移
-    
     Returns:
         displacement_features: 形状 (帧数, window_size, 17, 2) 的位移特征
     """
-    n_frames = normalized_points_array.shape[0]
-    
+    n_frames = normalized_points_array.shape[0] 
     # 1. 计算所有帧之间的位移（帧间差分）
-    # 位移[i] = 帧i+1 - 帧i
+    # 位移[i] = 帧i+1 - 帧i，位移数量 = 帧数 - 1
     displacements = np.diff(normalized_points_array, axis=0)  # (帧数-1, 17, 2)
-    
-    # 2. 为第一帧补一个零位移（使位移数量 = 帧数）
-    zero_displacement = np.zeros((1, 17, 2), dtype=np.float32)
-    displacements = np.concatenate([zero_displacement, displacements], axis=0)  # (帧数, 17, 2)
-    
-    # 3. 堆叠窗口
+    # 2. 堆叠窗口
     # 对于第 t 帧，特征 = [位移[t], 位移[t+1], ..., 位移[t+window_size-1]]
-    # 不足 window_size 的部分补0
+    # 位移索引从 0 开始，对应 帧1→帧2
     displacement_features = []
     
     for t in range(n_frames):
         stacked = []
         for offset in range(window_size):
-            idx = t + offset
-            if idx < n_frames:
+            idx = t + offset  # 位移索引
+            if idx < len(displacements):  # 位移存在
                 stacked.append(displacements[idx])
-            else:
+            else:  # 超出范围，补0
                 stacked.append(np.zeros((17, 2), dtype=np.float32))
         # 堆叠成 (window_size, 17, 2)
         stacked = np.stack(stacked, axis=0)
@@ -424,8 +415,7 @@ def compute_displacement_features(normalized_points_array, window_size=WINDOW_SI
     
     displacement_features = np.stack(displacement_features, axis=0)  # (帧数, window_size, 17, 2)
     
-    # 4. 归一化到 [0, 1]
-    # 计算全局最大最小值
+    # 3. 归一化到 [0, 1]
     min_val = displacement_features.min()
     max_val = displacement_features.max()
     
