@@ -93,64 +93,7 @@ class VideoScoreEvaluator:
         self.feature_weights = (self.angle_weights + self.center_weights + 
                                 self.orientation_weight + self.feet_distance_weight + 
                                 self.phase_weights)
-    
-    def normalize_keypoints(self, keypoints: np.ndarray) -> np.ndarray:
-        """
-        对关键点进行以人体为中心的归一化
-        
-        Args:
-            keypoints: 形状为 (帧数, 17, 2) 的关键点数组
-            
-        Returns:
-            归一化后的关键点数组，形状相同
-        """
-        normalized = np.zeros_like(keypoints, dtype=np.float32)
-        for i in range(keypoints.shape[0]):
-            frame_kps = keypoints[i]
-            valid_mask = ~((frame_kps[:, 0] == 0) & (frame_kps[:, 1] == 0))
-            
-            if np.sum(valid_mask) < 4:
-                normalized[i] = frame_kps
-                continue
-            
-            left_hip = frame_kps[11]
-            right_hip = frame_kps[12]
-            
-            # 确定参考点（髋部中心）
-            if (left_hip[0] == 0 and left_hip[1] == 0) or (right_hip[0] == 0 and right_hip[1] == 0):
-                reference = frame_kps[1]  # 使用鼻子作为参考
-                if reference[0] == 0 and reference[1] == 0:
-                    normalized[i] = frame_kps
-                    continue
-            else:
-                reference = (left_hip + right_hip) / 2
-            
-            # 确定缩放因子
-            left_shoulder = frame_kps[5]
-            right_shoulder = frame_kps[6]
-            if (left_shoulder[0] != 0 or left_shoulder[1] != 0) and (right_shoulder[0] != 0 or right_shoulder[1] != 0):
-                shoulder_width = np.linalg.norm(left_shoulder - right_shoulder)
-                scale = shoulder_width
-            else:
-                neck = frame_kps[1]
-                if neck[0] != 0 or neck[1] != 0:
-                    scale = np.linalg.norm(neck - reference)
-                else:
-                    scale = 1.0
-            
-            if scale < 1e-6:
-                scale = 1.0
-            
-            # 归一化关键点
-            for j in range(17):
-                if valid_mask[j]:
-                    normalized[i, j, 0] = (frame_kps[j, 0] - reference[0]) / scale
-                    normalized[i, j, 1] = (frame_kps[j, 1] - reference[1]) / scale
-                else:
-                    normalized[i, j] = [0, 0]
-        
-        return normalized
-    
+
     def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05,k:float = 4) -> tuple:
         """计算单帧得分（特征已经归一化，直接使用）"""
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
@@ -167,12 +110,45 @@ class VideoScoreEvaluator:
         sigma_squared = max(sigma_squared, 1.0)
         return mu, sigma_squared
     
+    def calculate_keypoint_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
+        """
+        计算关键点的DTW评分
+        test_points和template_points应该是已经从*_normalized_points.npy加载的数据
+        """
+        print("\n" + "-"*40)
+        print("关键点评分")
+        print("-"*40)
+        # 重塑为适合DTW的形状 (帧数, 34)
+        test_flat = test_points.reshape(test_points.shape[0], -1)
+        template_flat = template_points.reshape(template_points.shape[0], -1)
+        # 计算DTW距离和路径
+        distance, path = fastdtw(test_flat, template_flat, dist=euclidean)
+        path = np.array(path)
+    
+        # 计算每对对齐帧的得分和距离
+        frame_scores = []
+        frame_distances = []
+        for test_idx, template_idx in path:
+            test_frame = test_flat[test_idx]
+            template_frame = template_flat[template_idx]
+            dist = np.linalg.norm(test_frame - template_frame)
+            frame_distances.append(dist)
+            # 将距离转换为得分（阈值根据归一化后的尺度调整）
+            if dist <= 50.0:
+                score = 100 
+            elif 50 < dist < 150:
+                score = (1 - ((dist-50) / 100)) * 100
+            else:
+                score = 0.0
+            frame_scores.append(score)
+        
+        final_score = np.mean(frame_scores)
+        return final_score, frame_scores, frame_distances, path
+    
     def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 4) -> tuple:
         """计算单帧位移得分（与特征评分相同的逻辑）"""
         q = np.abs(test_vec - template_vec)
         q_mean = np.mean(q)
-        print(111111111)
-        print(q_mean)
         exceed = q_mean - t
         if q_mean <= t:
             mu = 100.0
@@ -207,68 +183,19 @@ class VideoScoreEvaluator:
             sigma_squared_list.append(sigma_squared)
             frame_scores.append(score)
         
-        # ========== 修改部分开始 ==========
         mu_array = np.array(mu_list)
         var_array = np.array(sigma_squared_list)  # 每帧的方差
-        
         precision = 1.0 / var_array  # 精度 = 1/方差
         total_precision = np.sum(precision)
-
         mu_fuse = np.sum(mu_array * precision) / total_precision
-        
         sigma_fuse_squared = 1.0 / total_precision
-        
         action_std = min(np.std(mu_array), 3.0)  # 限制最大影响
-
         sigma_video = np.sqrt(sigma_fuse_squared + action_std**2)
-        
         # 3. 95% 置信区间
         lower_bound = mu_fuse - 1.96 * sigma_video
         upper_bound = mu_fuse + 1.96 * sigma_video
-        # ========== 修改部分结束 ==========
-
         final_score = mu_fuse
         return final_score, frame_scores, path, q_mean_list, lower_bound, upper_bound
-    
-    def calculate_keypoint_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
-        """计算关键点的DTW评分"""
-        print("\n" + "-"*40)
-        print("关键点评分")
-        print("-"*40)
-        
-        # 归一化关键点
-        test_norm = self.normalize_keypoints(test_points)
-        template_norm = self.normalize_keypoints(template_points)
-        
-        # 重塑为适合DTW的形状 (帧数, 34)
-        test_flat = test_norm.reshape(test_norm.shape[0], -1)
-        template_flat = template_norm.reshape(template_norm.shape[0], -1)
-        
-        # 计算DTW距离和路径
-        distance, path = fastdtw(test_flat, template_flat, dist=euclidean)
-        path = np.array(path)
-        
-        print(f"关键点DTW距离: {distance:.4f}")
-        print(f"对齐路径长度: {len(path)}")
-        
-        # 计算每对对齐帧的得分和距离
-        frame_scores = []
-        frame_distances = []
-        for test_idx, template_idx in path:
-            test_frame = test_flat[test_idx]
-            template_frame = template_flat[template_idx]
-            dist = np.linalg.norm(test_frame - template_frame)
-            frame_distances.append(dist)
-            
-            # 将距离转换为得分
-            if dist <= 35.0:
-                score = 100 * (1 - dist / 100)
-            else:
-                score = 0.0
-            frame_scores.append(score)
-        
-        final_score = np.mean(frame_scores)
-        return final_score, frame_scores, frame_distances, path
     
     def score_video(self) -> tuple:
         """主函数：对测试视频评分"""
@@ -294,24 +221,19 @@ class VideoScoreEvaluator:
         print("="*60)
         print("视频动作质量评分")
         print("="*60)
-        
         # 加载特征（特征已经在Feature类中归一化好了）
         self.template_features = np.load(template_feat_path)
         self.test_features = np.load(test_feat_path)
         
         print(f"\n模板视频帧数: {self.template_features.shape[0]}")
         print(f"测试视频帧数: {self.test_features.shape[0]}")
-        
-        # 特征已经归一化，直接使用，不需要再次归一化
-        print("\n特征已预先归一化，直接进行DTW对齐...")
-        
         # 特征评分
         self.feat_score, self.frame_scores, self.path, self.q_mean_list, self.lower_bound, self.upper_bound = \
             self.calculate_video_score(self.test_features, self.template_features)
         
         print(f"\n特征得分: {self.feat_score:.2f}")
         
-        # 关键点评分
+        # 关键点评分 - 直接使用已归一化的关键点，不再调用normalize_keypoints
         self.point_score = 0.0
         self.point_distances = None
         
@@ -322,11 +244,7 @@ class VideoScoreEvaluator:
             
             template_points = np.load(template_point_path)
             test_points = np.load(test_point_path)
-            
-            print(f"模板关键点形状: {template_points.shape}")
-            print(f"测试关键点形状: {test_points.shape}")
-            
-            # 确保是 (帧数, 17, 2) 格式
+            # 确保是 (帧数, 17, 2) 格式，如果包含置信度则只取前两维
             if len(template_points.shape) == 3:
                 if template_points.shape[2] == 3:
                     template_points = template_points[:, :, :2]
@@ -334,11 +252,16 @@ class VideoScoreEvaluator:
                 if test_points.shape[2] == 3:
                     test_points = test_points[:, :, :2]
             
+            # 直接调用calculate_keypoint_score，不再进行二次归一化
             self.point_score, point_frame_scores, self.point_distances, point_path = \
                 self.calculate_keypoint_score(test_points, template_points)
             print(f"\n关键点得分: {self.point_score:.2f}")
         else:
             print("\n警告: 找不到关键点文件，跳过关键点评分")
+            if not os.path.exists(template_point_path):
+                print(f"  缺失: {template_point_path}")
+            if not os.path.exists(test_point_path):
+                print(f"  缺失: {test_point_path}")
         
         self.displacement_score = 0.0
         self.displacement_frame_scores = None
@@ -639,7 +562,7 @@ if __name__ == '__main__':
     evaluator.plot_displacement_over_time()
     evaluator.visualize_alignment_path()
     # 可视化指定对齐帧
-    VIEW_FRAME = 1
+    VIEW_FRAME = 100
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 打印摘要

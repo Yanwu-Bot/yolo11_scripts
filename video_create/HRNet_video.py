@@ -139,37 +139,27 @@ def detect_person_with_yolo(frame, conf_threshold=0.5):
 
 def normalize_keypoints(p_pos, target_torso_length=100):
     """
-    将关键点坐标归一化到标准躯干长度
-    p_pos: 原始关键点坐标列表，格式为 [(x1,y1), (x2,y2), ...]
-    target_torso_length: 目标躯干长度（像素），默认100
-    返回: 归一化后的关键点坐标列表
+    将关键点坐标归一化
     """
     if len(p_pos) < 17:
         return p_pos
-    
     # 获取躯干中心点（肩膀中点和髋部中点）
     # 左肩(p5)和右肩(p6)的中点
     shoulder_center_x = (p_pos[5][0] + p_pos[6][0]) / 2
     shoulder_center_y = (p_pos[5][1] + p_pos[6][1]) / 2
-    
     # 左髋(p11)和右髋(p12)的中点
     hip_center_x = (p_pos[11][0] + p_pos[12][0]) / 2
     hip_center_y = (p_pos[11][1] + p_pos[12][1]) / 2
-    
     # 计算躯干长度
     torso_length = math.sqrt((shoulder_center_x - hip_center_x)**2 + 
                             (shoulder_center_y - hip_center_y)**2)
-    
     if torso_length < 1e-6:
         return p_pos
-    
     # 计算缩放比例
     scale = target_torso_length / torso_length
-    
     # 以髋部中点为归一化原点
     center_x = hip_center_x
     center_y = hip_center_y
-    
     # 归一化所有关键点
     normalized_points = []
     for i in range(len(p_pos)):
@@ -179,7 +169,6 @@ def normalize_keypoints(p_pos, target_torso_length=100):
             normalized_points.append([norm_x, norm_y])
         else:
             normalized_points.append(p_pos[i])
-    
     return normalized_points, scale, torso_length, (center_x, center_y)
 
 def predict_frame(frame):
@@ -293,21 +282,13 @@ def process_frame(img,preview=True, normalize_for_storage=True):
     # 预测单帧状态
     # process_single_image(img) 
     list_p, scores = predict_frame(img)
-    
-    # # list_p = keypoints.tolist()
-    angle_ra = angle_show(list_p, (10,20), (0,0,255), "RightArm", r_arm, img)
-    angle_la = angle_show(list_p, (10,40), (0,0,255), "LeftArm", l_arm, img)
-    angle_rl = angle_show(list_p, (10,60), (0,0,255), "RightLeg", r_leg, img)
-    angle_ll = angle_show(list_p, (10,80), (0,0,255), "LeftLeg", l_leg, img)
-    p_pos = get_keypoints(list_p)
-    
+    p_pos = get_keypoints(list_p)  #获取关键点列表[[x,y],[x,y]..]
     # 添加归一化处理
     normalized_points = None
     scale_info = None
     if normalize_for_storage and p_pos:
         normalized_points, scale, torso_length, center = normalize_keypoints(p_pos, target_torso_length=100)
         scale_info = {'scale': scale, 'torso_length': torso_length, 'center': center}
-    
     trajectory_tracker.update(p_pos) #更新轨迹
     feature = Feature(p_pos)         #获取关键特征
 
@@ -388,7 +369,6 @@ def process_frame(img,preview=True, normalize_for_storage=True):
     draw.draw_select()
     feature_frame = feature.get_all_features()       #获取当前帧的所有特征
     # feature_frame.append(step_fres)                  #特征增加步频
-    
     # 将归一化后的关键点也添加到返回值中
     if preview:
         cv2.imshow('YOLO Detection', img)
@@ -526,4 +506,3 @@ if __name__ == '__main__':
     current_time = time.time()
     print(f"生成视频总耗时：{show_time(START_TIME, current_time)}")
     print(f"步数: {step_count}")
-    # print(All_feature)

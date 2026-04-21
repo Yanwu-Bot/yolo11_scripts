@@ -22,7 +22,7 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_man.mp4'
+input_path = 'video_origin/data_video/use/kaihetiao2.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 WINDOW_SIZE = 3  # 可调整窗口大小
