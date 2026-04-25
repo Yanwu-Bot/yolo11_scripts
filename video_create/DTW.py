@@ -142,7 +142,7 @@ class VideoScoreEvaluator:
     
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> tuple:
         """计算整个视频特征得分和DTW对齐"""
-        distance, path = fastdtw(test_features, template_features, dist=euclidean)
+        distance, path = fastdtw(test_features, template_features, dist=euclidean) #distance可用于评分
         path = np.array(path)
         print(f"DTW对齐完成: 路径长度 = {len(path)}")
         frame_scores = []
@@ -389,7 +389,6 @@ class VideoScoreEvaluator:
             plt.show()
         
         plt.close()
-        
 
     def visualize_aligned_frames(self, pair_index: int):
         """可视化指定对齐对的两帧画面"""
@@ -483,7 +482,7 @@ if __name__ == '__main__':
     # 生成综合分析图（2x2布局）
     evaluator.plot_all_analysis(t=0.05, save_path=None)
     # 可视化指定对齐帧（可选）
-    VIEW_FRAME = 100
+    VIEW_FRAME = 255
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 打印摘要

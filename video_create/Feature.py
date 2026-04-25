@@ -124,7 +124,6 @@ class Feature:
         返回: [β₁, β₂] 列表，范围都在[0, 1]
         """
         betas = []
-        
         # β₁: 身体前倾角度，除以90归一化到[0, 1]
         vertical_point = [self.neck[0], self.neck[1] + 100]
         beta1 = calculate_angle(vertical_point, self.neck, self.hip_center)
@@ -151,7 +150,6 @@ class Feature:
         left_leg_phase = self.l_foot[0] - self.l_hip[0]
         right_leg_phase = self.r_foot[0] - self.r_hip[0]
         
-        # 使用脊柱宽度作为参考长度来归一化（使特征与人体尺度无关）
         spine_len = self.spine_width + 1e-6
         
         left_arm_norm = left_arm_phase / spine_len
@@ -170,15 +168,11 @@ class Feature:
         return gamma
     
     def get_all_features(self):
-        """
-        获取所有特征：24维角度 + 8维中心 + 2维beta + 4维gamma = 38维
-        所有特征都已经归一化到[-1, 1]或[0, 1]范围
-        返回: 38维列表
-        """
-        part_angles = self.get_part_angle()   # 24维，范围[0, 1]
-        center = self.get_center()            # 8维，范围[-1, 1]
-        beta = self.get_beta_features()       # 2维，范围[0, 1]
-        gamma = self.get_gamma_features()     # 4维，范围[-1, 1]
+
+        part_angles = self.get_part_angle()   
+        center = self.get_center()            
+        beta = self.get_beta_features()       
+        gamma = self.get_gamma_features()     
         
         all_features = part_angles + center + beta + gamma
         return all_features

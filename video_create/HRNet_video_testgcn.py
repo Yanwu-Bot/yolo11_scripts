@@ -19,6 +19,11 @@ from ultralytics import YOLO  # 添加YOLO库
 import sys
 from Feature import *
 from matplotlib import rcParams #字体
+
+# ========== 添加 GCN 相关导入 ==========
+from GCN import GCNFeatureExtractor
+# ====================================
+
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
@@ -56,6 +61,10 @@ All_point = []                           #用于存放关键点
 Normal_keypoints = []                    #归一化关键点，用于计算向量
 Vector_list = []                        #向量信息
 
+# ========== 添加 GCN 相关全局变量（新增，不影响原有） ==========
+All_gcn_features = []                   #用于存放GCN特征
+# ==============================================================
+
 # 全局变量用于模型，避免重复加载
 device = None
 hrnet_model = None  # 改名为hrnet_model避免混淆
@@ -63,16 +72,20 @@ yolo_model = None  # 添加YOLO模型
 person_info = None
 hrnet_transform = None
 
+# ========== 添加 GCN 提取器全局变量（新增，不影响原有） ==========
+gcn_extractor = None
+# ==============================================================
+
 def init_models():
-    """初始化YOLO和HRNet模型"""
-    global device, hrnet_model, yolo_model, person_info, hrnet_transform
+    """初始化YOLO和HRNet模型和GCN模型"""
+    global device, hrnet_model, yolo_model, person_info, hrnet_transform, gcn_extractor
     
     if device is None:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         print(f"using device: {device}")
         #初始化YOLO模型
         try:
-            yolo_model = YOLO('weights\yolo11n.pt')  # 会自动下载
+            yolo_model = YOLO('weights\\yolo11n.pt')
             print("YOLO模型加载成功")
         except Exception as e:
             print(f"YOLO模型加载失败: {e}")
@@ -106,6 +119,21 @@ def init_models():
         except Exception as e:
             print(f"HRNet模型加载错误: {e}")
             return False
+        
+        # ========== 初始化 GCN 特征提取器（加载预训练权重） ==========
+        try:
+            gcn_weights_path = 'result/GCN/best_model.pth'  # 训练好的权重路径
+            if os.path.exists(gcn_weights_path):
+                gcn_extractor = GCNFeatureExtractor(device=str(device), weights_path=gcn_weights_path)
+                print("GCN特征提取器初始化成功（已加载预训练权重）")
+            else:
+                gcn_extractor = GCNFeatureExtractor(device=str(device))
+                print("GCN特征提取器初始化成功（使用随机初始化）")
+        except Exception as e:
+            print(f"GCN特征提取器初始化失败: {e}")
+            gcn_extractor = None
+        # ============================================================
+        
         # 3. 初始化数据转换
         resize_hw = (256, 192)
         hrnet_transform = transforms.Compose([
@@ -276,19 +304,32 @@ def predict_frame(frame):
         
         return result_list, scores
 
-def process_frame(img,preview=True, normalize_for_storage=True):
+def process_frame(img, preview=True, normalize_for_storage=True):
     """处理视频帧"""
-    global current_frame, step_count, step_fres, score, time_current
+    global current_frame, step_count, step_fres, score, time_current, gcn_extractor, All_gcn_features
+    
     # 预测单帧状态
-    # process_single_image(img) 
     list_p, scores = predict_frame(img)
-    p_pos = get_keypoints(list_p)  #获取关键点列表[[x,y],[x,y]..]
+    p_pos = get_keypoints(list_p)  # 获取关键点列表[[x,y],[x,y]..]
+    
     # 添加归一化处理
     normalized_points = None
     scale_info = None
     if normalize_for_storage and p_pos:
         normalized_points, scale, torso_length, center = normalize_keypoints(p_pos, target_torso_length=100)
         scale_info = {'scale': scale, 'torso_length': torso_length, 'center': center}
+    
+    # ========== 提取 GCN 特征（使用归一化后的关键点） ==========
+    gcn_feature = None
+    if gcn_extractor is not None and normalized_points is not None and len(normalized_points) >= 17:
+        try:
+            keypoints_array = np.array(normalized_points[:17], dtype=np.float32)
+            gcn_feature = gcn_extractor.extract(keypoints_array)
+        except Exception as e:
+            print(f"GCN特征提取错误: {e}")
+            gcn_feature = None
+    # ========================================================
+    
     trajectory_tracker.update(p_pos) #更新轨迹
     feature = Feature(p_pos)         #获取关键特征
 
@@ -325,10 +366,10 @@ def process_frame(img,preview=True, normalize_for_storage=True):
     Max_acc.append(max(Key_point_acceleration)/1000)
     #----------------------------
 
-    p13 = p_pos[13]
-    p14 = p_pos[14]
-    p15 = p_pos[15]
-    p16 = p_pos[16]
+    p13 = p_pos[13] if len(p_pos) > 13 else [0, 0]
+    p14 = p_pos[14] if len(p_pos) > 14 else [0, 0]
+    p15 = p_pos[15] if len(p_pos) > 15 else [0, 0]
+    p16 = p_pos[16] if len(p_pos) > 16 else [0, 0]
     if change_detector(p15, p16):
             step_count += 1
             #把当前帧数添加进列表
@@ -373,10 +414,14 @@ def process_frame(img,preview=True, normalize_for_storage=True):
     if preview:
         cv2.imshow('YOLO Detection', img)
         cv2.waitKey(1)
-    return img, p_pos, feature_frame, normalized_points, scale_info
+    
+    # 返回值增加 gcn_feature
+    return img, p_pos, feature_frame, normalized_points, scale_info, gcn_feature
 
 def generate_video(input_path):
     """生成处理后的视频"""
+    global All_gcn_features, Max_acc, Vector_list, Key_point_list, Normal_keypoints, Key_point_acceleration, current_frame, step_count, step_fres, time_current
+    
     print('视频开始处理', input_path)
     cap = cv2.VideoCapture(input_path)
     # 获取视频总帧数
@@ -399,6 +444,21 @@ def generate_video(input_path):
     All_normalized_points = []
     All_scale_info = []
     
+    # ========== 重置 GCN 特征列表（新增，不影响原有） ==========
+    All_gcn_features = []
+    # ========================================================
+    
+    # 重置全局变量
+    Max_acc = []
+    Vector_list = []
+    Key_point_list = []
+    Normal_keypoints = []
+    Key_point_acceleration = []
+    current_frame = 1
+    step_count = 0
+    step_fres = 0
+    time_current = []
+    
     try:
         frame_index = 0
         while cap.isOpened():
@@ -407,9 +467,20 @@ def generate_video(input_path):
                 break
             frame_index += 1
             try:
-                processed_frame, p_pos, feature_frame, normalized_points, scale_info = process_frame(frame, normalize_for_storage=True)
+                # 接收新增的 gcn_feature（原有变量不变，增加一个接收）
+                processed_frame, p_pos, feature_frame, normalized_points, scale_info, gcn_feature = process_frame(frame, normalize_for_storage=True)
+                
+                # 原有特征保存（不变）
                 All_feature.append(feature_frame)
                 All_point.append(p_pos)
+                
+                # ========== 保存 GCN 特征（新增，不影响原有） ==========
+                if gcn_feature is not None:
+                    All_gcn_features.append(gcn_feature)
+                else:
+                    All_gcn_features.append(np.zeros(16, dtype=np.float32))  # 16维特征
+                # ====================================================
+                
                 # 只保存有效的归一化点（非None）
                 if normalized_points is not None:
                     # 转换为numpy数组并确保是float32
@@ -439,13 +510,7 @@ def generate_video(input_path):
             cap.release()
         print('\n视频处理完成')
         print('Video saved to:', output_path)
-    # # 绘制轨迹曲线
-    # trajectory_tracker.plot_trajectory_curves(
-    #     save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
-    # )
-    # trajectory_tracker.export_trajectory_data(
-    #     csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
-    # )
+    
     print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
     frames = list(range(2, frame_count + 1))
     print(len(Max_acc))
@@ -457,6 +522,7 @@ def generate_video(input_path):
     wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
     #===================================
 
+    # ========== 原有特征保存（完全不变） ==========
     features_array = np.array(All_feature)
     point_array = np.array(All_point)
     vector_array = np.array(Vector_list)
@@ -481,6 +547,17 @@ def generate_video(input_path):
     np.save(f'result/features/{video_name}_features.npy', features_array)
     np.save(f'result/features/{video_name}_points.npy', point_array)
     np.save(f'result/features/{video_name}_vector.npy', vector_normalized)
+    # ============================================
+    
+    # ========== 保存 GCN 特征（新增，不影响原有） ==========
+    if All_gcn_features:
+        gcn_features_array = np.array(All_gcn_features, dtype=np.float32)  # (T, 16)
+        np.save(f'result/features/{video_name}_gcn_features.npy', gcn_features_array)
+        print(f"GCN特征已保存: result/features/{video_name}_gcn_features.npy")
+        print(f"GCN特征形状: {gcn_features_array.shape}")
+    else:
+        print("警告: 没有GCN特征数据")
+    # ====================================================
 
 def progress_bar(current, total, bar_length=30, prefix="进度"):
     percent = current / total
