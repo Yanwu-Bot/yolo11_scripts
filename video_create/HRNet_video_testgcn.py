@@ -1,4 +1,4 @@
-#结合了YOLO人体识别和HRnet姿态检测的视频生成代码,生成耗时更少
+#结合了YOLO人体识别和HRnet姿态检测的视频生成代码,生成耗时更少（生成GCN特征）
 
 import math  
 import os

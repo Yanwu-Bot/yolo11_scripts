@@ -22,7 +22,7 @@ from matplotlib import rcParams #字体
 rcParams['font.family'] = 'SimHei'
 
 #视频输入地址
-input_path = 'video_origin/data_video/use/run_man.mp4'
+input_path = 'video_origin/data_video/use/00051.mp4'
 video_name = os.path.splitext(os.path.basename(input_path))[0]
 
 trajectory_tracker = KeypointTrajectoryTracker(
@@ -335,7 +335,7 @@ def process_frame(img,preview=True, normalize_for_storage=True):
             time_current.append(current_frame)
             #如果步数大于2步即出现可以计算步频
             if step_count > 2:
-                # 确保time_current至少有两个不同的值
+                # 确保time_current至少有两个不同的值w'w'w'w'w'w'sa's's
                 if len(time_current) >= 2 and time_current[-1] > time_current[-2]:
                     # 每步时间差
                     frame_diff = time_current[-1] - time_current[-2]

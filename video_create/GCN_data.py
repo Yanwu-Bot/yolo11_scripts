@@ -1,3 +1,4 @@
+#输入视频生成帧比对数据集
 import os
 import cv2
 import math
@@ -202,7 +203,6 @@ def build_dataset(video_paths, threshold=50, max_pairs_per_video=500, normalize=
     # ========== 距离分布分析（帮助确定阈值） ==========
     if analyze:
         print(f"\n{'='*50}")
-        print("距离分布分析...")
         
         same_distances = []
         cross_distances = []
