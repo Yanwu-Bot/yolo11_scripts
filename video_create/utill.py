@@ -164,16 +164,11 @@ def predict():
                             conf=0.5 #置信度阈值
                             )
     
-def get_keypoints(list_p):
-    p_pos=[]
-    for p in list_p[0]:
-        x = p[0]
-        x = int(x)
-        y = p[1]
-        y = int(y) 
-        pos = (x,y)
-        p_pos.append(pos)
-    return p_pos
+def get_keypoints(self, list_p):
+    """从包含score的列表提取 (x,y) 坐标"""
+    if not list_p or not list_p[0]:
+        return []
+    return [[p[0], p[1]] for p in list_p[0]]
 
 #角度显示
 def angle_show(list_p,position,color,text,limb,img):  #显示位置，字体颜色，显示内容，显示肢体，投射图像

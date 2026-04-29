@@ -4,7 +4,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
-from GCN import PoseGCN
+from scripts.yolo11_scripts.GCN.GCN import PoseGCN
 
 # ========== 数据集类 ==========
 class PosePairDataset(Dataset):

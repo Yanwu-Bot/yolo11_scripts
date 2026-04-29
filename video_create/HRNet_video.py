@@ -335,7 +335,7 @@ def process_frame(img,preview=True, normalize_for_storage=True):
             time_current.append(current_frame)
             #如果步数大于2步即出现可以计算步频
             if step_count > 2:
-                # 确保time_current至少有两个不同的值w'w'w'w'w'w'sa's's
+                # 确保time_current至少有两个不同的值
                 if len(time_current) >= 2 and time_current[-1] > time_current[-2]:
                     # 每步时间差
                     frame_diff = time_current[-1] - time_current[-2]
@@ -493,10 +493,10 @@ def progress_bar(current, total, bar_length=30, prefix="进度"):
         print()
 
 def change_detector(a,b):
-    if a>b and step[-1] != 1:
+    if a[0]>b[0] and step[-1] != 1:
         step.append(1)
         return True
-    elif a<b and step[-1] != 2:
+    elif a[0]<b[0] and step[-1] != 2:
         step.append(2)
         return True
 

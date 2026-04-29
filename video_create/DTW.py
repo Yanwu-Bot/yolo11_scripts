@@ -482,7 +482,7 @@ if __name__ == '__main__':
     # 生成综合分析图（2x2布局）
     evaluator.plot_all_analysis(t=0.05, save_path=None)
     # 可视化指定对齐帧（可选）
-    VIEW_FRAME = 210
+    VIEW_FRAME = 20
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 打印摘要
