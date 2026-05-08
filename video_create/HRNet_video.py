@@ -1,508 +1,394 @@
-#结合了YOLO人体识别和HRnet姿态检测的视频生成代码,生成耗时更少
-
-import math  
+import math
 import os
 import json
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
+import sys
+import time
+from collections import deque
 from HRNet_model import HighResolutionNet
 import transforms
-from run_test import *
-from tqdm import tqdm
-import time    
-import cv2
 from utill import *
-from collections import deque
 from time_utils import show_time
-from ultralytics import YOLO  # 添加YOLO库
-import sys
+from ultralytics import YOLO
 from Feature import *
-from matplotlib import rcParams #字体
+from matplotlib import rcParams
+
 rcParams['font.family'] = 'SimHei'
 
-#视频输入地址
-input_path = 'video_origin/data_video/use/run_woman.mp4'
-video_name = os.path.splitext(os.path.basename(input_path))[0]
+class VideoProcessor:
+    VIDEO_FRAME_SPEED = 24
+    YOLO_CONF_THRESHOLD = 0.5
+    NORMALIZE_TORSO_LENGTH = 100
+    STEP_MIN_GAP = 0.2
+    OUTPUT_VIDEO_SIZE = (1280, 720)
 
-trajectory_tracker = KeypointTrajectoryTracker(
-    num_keypoints=17,
-    history_length=200,  # 保存最近200帧的轨迹
-    output_dir="result/track_img"
-)
+    def __init__(self, input_path):
+        self.input_path = input_path
+        self.video_name = os.path.splitext(os.path.basename(input_path))[0]
+        self.output_dir = "result"
+        self.trajectory_tracker = KeypointTrajectoryTracker(
+            num_keypoints=17, history_length=200,
+            output_dir=os.path.join(self.output_dir, "track_img")
+        )
 
-time_current = []
-data_buffer = deque(maxlen=50)
-weight = [1,1,1,0,0,0]
-step=[0]
-r_arm = [6,8,10]
-l_arm = [5,7,9]
-r_leg = [12,14,16]
-l_leg = [11,13,15]
-step_count = 0  # 改为step_count，避免与循环变量i冲突
-score = 0
-step_fres = 0
-frame_count = 0
-#24帧每秒
-VIDEO_FRAME_SPEED = 24
-TIME_GAP = round(1/VIDEO_FRAME_SPEED,3)
-current_frame = 1 
-START_TIME = time.time()
-Key_point_list = []                      #用于存放当前帧关键点
-Key_point_acceleration = []              #用于存放当前所有关键点的加速度
-Max_acc = []                             #最大加速度总列表
-All_feature = []                         #用于存放特征
-All_point = []                           #用于存放关键点
-Normal_keypoints = []                    #归一化关键点，用于计算向量
-Vector_list = []                        #向量信息
+        self.device = None
+        self.hrnet_model = None
+        self.yolo_model = None
+        self.person_info = None
+        self.hrnet_transform = None
 
-# 全局变量用于模型，避免重复加载
-device = None
-hrnet_model = None  # 改名为hrnet_model避免混淆
-yolo_model = None  # 添加YOLO模型
-person_info = None
-hrnet_transform = None
+        self.keypoint_prev = None
+        self.normalized_prev = None
+        self.max_acc = []
+        self.vector_list = []
+        self.step_state = 0
+        self.step_count = 0
+        self.step_freq = 0.0
+        self.last_step_time = 0.0
+        self.current_frame = 0
+        self.all_features = []
+        self.all_points = []
+        self.all_normalized_points = []
+        self.last_roi = None
 
-def init_models():
-    """初始化YOLO和HRNet模型"""
-    global device, hrnet_model, yolo_model, person_info, hrnet_transform
-    
-    if device is None:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        print(f"using device: {device}")
-        #初始化YOLO模型
+    def init_models(self):
+        if self.device is not None:
+            return True
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         try:
-            yolo_model = YOLO('weights\yolo11n.pt')  # 会自动下载
-            print("YOLO模型加载成功")
-        except Exception as e:
-            print(f"YOLO模型加载失败: {e}")
-            return False
-        #初始化HRNet模型
-        weights_path = "HRnet\\pytorch\\pose_coco\\pose_hrnet_w32_256x192.pth"
-        keypoint_json_path = "HRnet\\person_keypoints.json"
-        # 确保路径存在
-        if not os.path.exists(weights_path):
-            print(f"HRNet权重文件不存在: {weights_path}")
-            return False
-        if not os.path.exists(keypoint_json_path):
-            print(f"关键点JSON文件不存在: {keypoint_json_path}")
-            return False
-        # read json file
-        try:
+            self.yolo_model = YOLO('weights/yolo11n.pt')
+            self.hrnet_model = HighResolutionNet(base_channel=32)
+            weights_path = "HRnet/pytorch/pose_coco/pose_hrnet_w32_256x192.pth"
+            keypoint_json_path = "HRnet/person_keypoints.json"
+            if not os.path.exists(weights_path) or not os.path.exists(keypoint_json_path):
+                raise FileNotFoundError("HRNet weights / keypoint json not found")
             with open(keypoint_json_path, "r") as f:
-                person_info = json.load(f)
-        except Exception as e:
-            print(f"加载JSON文件错误: {e}")
-            return False
-        try:
-            # create model
-            hrnet_model = HighResolutionNet(base_channel=32)
-            weights = torch.load(weights_path, map_location=device)
+                self.person_info = json.load(f)
+            weights = torch.load(weights_path, map_location=self.device)
             weights = weights if "model" not in weights else weights["model"]
-            hrnet_model.load_state_dict(weights)
-            hrnet_model.to(device)
-            hrnet_model.eval()
-            print("HRNet模型加载成功")
+            self.hrnet_model.load_state_dict(weights)
+            self.hrnet_model.to(self.device)
+            self.hrnet_model.eval()
+            resize_hw = (256, 192)
+            self.hrnet_transform = transforms.Compose([
+                transforms.AffineTransform(scale=(1.25, 1.25), fixed_size=resize_hw),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
         except Exception as e:
-            print(f"HRNet模型加载错误: {e}")
+            print(f"Model initialization failed: {e}")
             return False
-        # 3. 初始化数据转换
-        resize_hw = (256, 192)
-        hrnet_transform = transforms.Compose([
-            transforms.AffineTransform(scale=(1.25, 1.25), fixed_size=resize_hw),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        print("所有模型初始化完成")
-    return True
+        return True
 
-def detect_person_with_yolo(frame, conf_threshold=0.5):
-    """
-    使用YOLO检测人物位置
-    返回: 第一个人物的边界框 [x1, y1, x2, y2] 或 None
-    """
-    if yolo_model is None:
-        return None
-    # YOLO检测
-    results = yolo_model(frame, verbose=False)
-    for result in results:
-        boxes = result.boxes
-        if boxes is not None:
+    def detect_person(self, frame):
+        if self.yolo_model is None:
+            return None, 0
+        results = self.yolo_model(frame, verbose=False)
+        persons = []
+        for result in results:
+            boxes = result.boxes
+            if boxes is None:
+                continue
             for box in boxes:
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
-                # YOLO中person的类别ID通常是0
-                if cls_id == 0 and conf >= conf_threshold:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    return [float(x1), float(y1), float(x2), float(y2)], conf
-    return None, 0
+                if cls_id != 0 or conf < self.YOLO_CONF_THRESHOLD:
+                    continue
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                area = (x2 - x1) * (y2 - y1)
+                persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area))
+        if not persons:
+            return None, 0
+        persons.sort(key=lambda x: x[2], reverse=True)
+        return persons[0][0], persons[0][1]
 
-def normalize_keypoints(p_pos, target_torso_length=100):
-    """
-    将关键点坐标归一化
-    """
-    if len(p_pos) < 17:
-        return p_pos
-    # 获取躯干中心点（肩膀中点和髋部中点）
-    # 左肩(p5)和右肩(p6)的中点
-    shoulder_center_x = (p_pos[5][0] + p_pos[6][0]) / 2
-    shoulder_center_y = (p_pos[5][1] + p_pos[6][1]) / 2
-    # 左髋(p11)和右髋(p12)的中点
-    hip_center_x = (p_pos[11][0] + p_pos[12][0]) / 2
-    hip_center_y = (p_pos[11][1] + p_pos[12][1]) / 2
-    # 计算躯干长度
-    torso_length = math.sqrt((shoulder_center_x - hip_center_x)**2 + 
-                            (shoulder_center_y - hip_center_y)**2)
-    if torso_length < 1e-6:
-        return p_pos
-    # 计算缩放比例
-    scale = target_torso_length / torso_length
-    # 以髋部中点为归一化原点
-    center_x = hip_center_x
-    center_y = hip_center_y
-    # 归一化所有关键点
-    normalized_points = []
-    for i in range(len(p_pos)):
-        if i < 17:  # 只处理17个关键点
-            norm_x = (p_pos[i][0] - center_x) * scale
-            norm_y = (p_pos[i][1] - center_y) * scale
-            normalized_points.append([norm_x, norm_y])
-        else:
-            normalized_points.append(p_pos[i])
-    return normalized_points, scale, torso_length, (center_x, center_y)
+    def normalize_keypoints(self, p_pos):
+        if len(p_pos) < 17:
+            return None, 0, 0, (0, 0)
+        #取中心点
+        sc = (p_pos[5][0] + p_pos[6][0]) / 2.0, (p_pos[5][1] + p_pos[6][1]) / 2.0
+        hc = (p_pos[11][0] + p_pos[12][0]) / 2.0, (p_pos[11][1] + p_pos[12][1]) / 2.0
+        torso_len = math.hypot(sc[0] - hc[0], sc[1] - hc[1])
+        if torso_len < 1e-6:
+            return None, 0, 0, (0, 0)
+        scale = self.NORMALIZE_TORSO_LENGTH / torso_len
+        norm = [[(p[0] - hc[0]) * scale, (p[1] - hc[1]) * scale] for p in p_pos[:17]]
+        return norm, scale, torso_len, hc
 
-def predict_frame(frame):
-    """处理单帧图像，检测关键点（使用YOLO+HRNet）"""
-    global device, hrnet_model, yolo_model, person_info, hrnet_transform
-    # 初始化模型（如果未初始化）
-    if yolo_model is None or hrnet_model is None:
-        if not init_models():
+    def predict_frame(self, frame):
+        if self.yolo_model is None or self.hrnet_model is None:
+            if not self.init_models():
+                return [[]], []
+        bbox, conf = self.detect_person(frame)
+        if bbox is None:
             return [[]], []
-    
-    # 使用YOLO检测人物，bbox为框坐标
-    bbox, conf = detect_person_with_yolo(frame, conf_threshold=0.5)
-    
-    if bbox is None:
-        # 如果没有检测到人物，返回空结果
-        return [[]], []
-    
-    # 确保边界框在图像范围内
-    height, width = frame.shape[:2]
-    x1, y1, x2, y2 = bbox
-    #超出边界的框返回图像内
-    x1 = max(0, min(x1, width - 1))
-    y1 = max(0, min(y1, height - 1))
-    x2 = max(0, min(x2, width - 1))
-    y2 = max(0, min(y2, height - 1))
-    bbox = [x1, y1, x2, y2]
-    
-    # 在图像上绘制YOLO检测框（绿色）
-    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), 
-                    (0, 255, 0), 2)
-    cv2.putText(frame, f"Person: {conf:.2f}", 
-                (int(x1), max(20, int(y1) - 10)), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
-    # 2. 裁剪人物区域（添加少量padding）
-    padding = 10
-    roi_x1 = max(0, int(x1) - padding)
-    roi_y1 = max(0, int(y1) - padding)
-    roi_x2 = min(width, int(x2) + padding)
-    roi_y2 = min(height, int(y2) + padding)
-    
-    # 裁剪ROI
-    person_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
-    
-    if person_roi.size == 0:
-        return [[]], []
-    
-    # 确保图像是RGB格式
-    if len(person_roi.shape) == 3:
-        if person_roi.shape[2] == 3:
-            person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_BGR2RGB)
+
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w - 1))
+        y2 = max(0, min(y2, h - 1))
+
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+        cv2.putText(frame, f"Person: {conf:.2f}", (int(x1), max(20, int(y1)-10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        padding = 30
+        roi_x1 = max(0, int(x1) - padding)
+        roi_y1 = max(0, int(y1) - padding)
+        roi_x2 = min(w, int(x2) + padding)
+        roi_y2 = min(h, int(y2) + padding)
+        person_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+        if person_roi.size == 0:
+            return [[]], []
+
+        self.last_roi = (roi_x1, roi_y1, roi_x2, roi_y2)
+
+        if len(person_roi.shape) == 2:
+            person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_GRAY2RGB)
         else:
-            person_rgb = person_roi
-    else:
-        person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_GRAY2RGB)
-    
-    roi_height, roi_width = person_rgb.shape[:2]
-    
-    # 3. 在ROI上使用HRNet检测关键点
-    img_tensor, target = hrnet_transform(
-        person_rgb, 
-        {"box": [0, 0, roi_width - 1, roi_height - 1]}
-    )
-    img_tensor = torch.unsqueeze(img_tensor, dim=0)
+            person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_BGR2RGB)
 
-    with torch.no_grad():
-        outputs = hrnet_model(img_tensor.to(device))
+        roi_h, roi_w = person_rgb.shape[:2]
+        img_tensor, target = self.hrnet_transform(person_rgb, {"box": [0, 0, roi_w-1, roi_h-1]})
+        img_tensor = torch.unsqueeze(img_tensor, dim=0)
 
-        flip_test = True
-        if flip_test:
+        with torch.no_grad():
+            outputs = self.hrnet_model(img_tensor.to(self.device))
             flip_tensor = transforms.flip_images(img_tensor)
-            flip_outputs = torch.squeeze(
-                transforms.flip_back(hrnet_model(flip_tensor.to(device)), person_info["flip_pairs"]),
+            flip_out = torch.squeeze(
+                transforms.flip_back(self.hrnet_model(flip_tensor.to(self.device)),
+                                     self.person_info["flip_pairs"]),
             )
-            flip_outputs[..., 1:] = flip_outputs.clone()[..., 0: -1]
-            outputs = (outputs + flip_outputs) * 0.5
+            flip_out[..., 1:] = flip_out.clone()[..., 0:-1]
+            outputs = (outputs + flip_out) * 0.5
 
-        keypoints, scores = transforms.get_final_preds(outputs, [target["reverse_trans"]], True)
-        
-        # 处理输出结果
-        keypoints = np.squeeze(keypoints)
-        scores = np.squeeze(scores)
-        
-        # 确保是一维数组
-        if scores.ndim == 0:
-            scores = np.array([scores])
-        
-        # 4. 将关键点坐标转换回原始图像
-        keypoints_list = []
-        for i, (kp, score_val) in enumerate(zip(keypoints, scores)):
-            if hasattr(kp, '__iter__') and len(kp) >= 2:
-                # HRNet输出的坐标（相对于ROI）
-                roi_x, roi_y = float(kp[0]), float(kp[1])
-                
-                # 公式：原始坐标 = ROI起点 + ROI坐标
-                orig_x = roi_x1 + roi_x
-                orig_y = roi_y1 + roi_y
-                # 确保坐标在图像范围内
-                orig_x = max(0, min(orig_x, width - 1))
-                orig_y = max(0, min(orig_y, height - 1))
-                keypoints_list.append([int(orig_x), int(orig_y), float(score_val)])
-            else:
-                keypoints_list.append([0, 0, 0.0])
-        result_list = [keypoints_list]
-        
-        return result_list, scores
+            keypoints, scores = transforms.get_final_preds(outputs, [target["reverse_trans"]], True)
+            keypoints = np.squeeze(keypoints)
+            scores = np.squeeze(scores)
+            if scores.ndim == 0:
+                scores = np.array([scores])
 
-def process_frame(img,preview=True, normalize_for_storage=True):
-    """处理视频帧"""
-    global current_frame, step_count, step_fres, score, time_current
-    # 预测单帧状态
-    # process_single_image(img) 
-    list_p, scores = predict_frame(img)
-    p_pos = get_keypoints(list_p)  #获取关键点列表[[x,y],[x,y]..]
-    # 添加归一化处理
-    normalized_points = None
-    scale_info = None
-    if normalize_for_storage and p_pos:
-        normalized_points, scale, torso_length, center = normalize_keypoints(p_pos, target_torso_length=100)
-        scale_info = {'scale': scale, 'torso_length': torso_length, 'center': center}
-    trajectory_tracker.update(p_pos) #更新轨迹
-    feature = Feature(p_pos)         #获取关键特征
-
-    #----------向量-------------
-    if not Normal_keypoints:
-        for i in range(17):
-            Normal_keypoints.append(normalized_points[i]) #初始列表为空，添加关键点
-        for i in range(17):
-            Vector_list.append([0.0, 0.0])  # dx, dy= 0
-    else:
-        for i in range(17):
-            dx = normalized_points[i][0] - Normal_keypoints[i][0]
-            dy = normalized_points[i][1] - Normal_keypoints[i][1]
-            vector_info = [dx,dy]
-            Vector_list.append(vector_info)
-        Normal_keypoints.clear()
-        for i in range(17):
-            Normal_keypoints.append(normalized_points[i]) #清除列表供下一帧数据存入
-
-    #----------加速度-------------
-    Key_point_acceleration.clear()
-    #如果列表为空
-    if not Key_point_list:
-        for j in range(17):
-            Key_point_list.append(p_pos[j])
-    else:
-        #用当前数据和上一帧保存的数据求加速度
-        for j in range(17):
-            Key_point_acceleration.append(acceleration(p_pos[j],Key_point_list[j],TIME_GAP))
-        Key_point_list.clear()
-        #传入这一帧的数据供下次使用
-        for j in range(17):
-            Key_point_list.append(p_pos[j])
-    Max_acc.append(max(Key_point_acceleration)/1000)
-    #----------------------------
-
-    p13 = p_pos[13]
-    p14 = p_pos[14]
-    p15 = p_pos[15]
-    p16 = p_pos[16]
-    if change_detector(p15, p16):
-            step_count += 1
-            #把当前帧数添加进列表
-            time_current.append(current_frame)
-            #如果步数大于2步即出现可以计算步频
-            if step_count > 2:
-                # 确保time_current至少有两个不同的值
-                if len(time_current) >= 2 and time_current[-1] > time_current[-2]:
-                    # 每步时间差
-                    frame_diff = time_current[-1] - time_current[-2]
-                    gap = frame_diff * TIME_GAP
-                    # 步频 = 1/时间
-                    if gap > 0.1:  # 同时确保gap不为0
-                        step_fres = round(1/gap, 3)
-                    else:
-                        # 如果gap太小或为0，保持之前的步频
-                        pass  # step_fres保持不变
+            keypoints_list = []
+            for kp, sc in zip(keypoints, scores):
+                if hasattr(kp, '__iter__') and len(kp) >= 2:
+                    ox = max(0, min(roi_x1 + float(kp[0]), w - 1))
+                    oy = max(0, min(roi_y1 + float(kp[1]), h - 1))
+                    keypoints_list.append([int(ox), int(oy), float(sc)])
                 else:
-                    # 帧差无效，保持之前的步频
-                    pass
+                    keypoints_list.append([0, 0, 0.0])
+        return [keypoints_list], scores
 
-    cv2.putText(img, f"Frequency:{str(step_fres)}", (10,160), 
-    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
-    fontScale=0.6, thickness=2, color=(255,0,255))
-    # 显示步数（使用step_count替代原来的i）
-    cv2.putText(img, str(step_count), (10, 100), 
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
-                fontScale=0.6, thickness=2, color=(255,0,0))
-    
-    # 可选：显示归一化信息
-    if scale_info and scale_info['torso_length'] > 0:
-        cv2.putText(img, f"Torso: {scale_info['torso_length']:.0f}px", (10, 180), 
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
-                    fontScale=0.5, thickness=1, color=(0,255,255))
-    
-    current_frame += 1
-    draw = Draw(img,list_p)
-    draw.draw_select()
-    feature_frame = feature.get_all_features()       #获取当前帧的所有特征
-    # feature_frame.append(step_fres)                  #特征增加步频
-    # 将归一化后的关键点也添加到返回值中
-    if preview:
-        cv2.imshow('YOLO Detection', img)
-        cv2.waitKey(1)
-    return img, p_pos, feature_frame, normalized_points, scale_info
+    def compute_step(self, p_pos, time_gap):
+        if len(p_pos) < 17:
+            return
+        try:
+            left_ankle_y = p_pos[15][1]
+            right_ankle_y = p_pos[16][1]
+        except (TypeError, IndexError):
+            return
+        delta = left_ankle_y - right_ankle_y
+        if abs(delta) > 10:
+            current_time = self.current_frame * time_gap
+            if current_time - self.last_step_time >= self.STEP_MIN_GAP:
+                new_state = 1 if delta > 0 else 2
+                if new_state != self.step_state and self.step_state != 0:
+                    self.step_count += 1
+                    if self.step_count > 1:
+                        gap = current_time - self.last_step_time
+                        if gap > 0.1:
+                            self.step_freq = round(1.0 / gap, 3)
+                    self.last_step_time = current_time
+                self.step_state = new_state
 
-def generate_video(input_path):
-    """生成处理后的视频"""
-    print('视频开始处理', input_path)
-    cap = cv2.VideoCapture(input_path)
-    # 获取视频总帧数
-    frame_count = 0
-    while cap.isOpened():
-        success, frame = cap.read()
-        if not success:
-            break
-        frame_count += 1
-    cap.release()
-    print('视频总帧数：', frame_count-1)
-    # 重置到视频开头
-    cap = cv2.VideoCapture(input_path)
-    # 生成视频
-    out, output_path, cap = video_out(input_path, 'result/result_video/video/', 'yolo_hrnet-')
-    if out is None:
-        print("无法创建视频输出")
-        return
-    # 存储归一化关键点的列表
-    All_normalized_points = []
-    All_scale_info = []
-    
-    try:
-        frame_index = 0
-        while cap.isOpened():
+    def process_frame(self, frame, preview=True, normalize_for_storage=True):
+        out_w, out_h = self.OUTPUT_VIDEO_SIZE
+
+        list_p, _ = self.predict_frame(frame)
+        p_pos = get_keypoints(list_p)
+
+        if p_pos and len(p_pos) >= 17:
+            validated = []
+            for pt in p_pos:
+                if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                    validated.append([float(pt[0]), float(pt[1])])
+                else:
+                    validated = []
+                    break
+            if len(validated) >= 17:
+                p_pos = validated
+            else:
+                p_pos = []
+
+        if not p_pos or len(p_pos) < 17:
+            self.keypoint_prev = None
+            self.normalized_prev = None
+            output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+            if preview:
+                cv2.setWindowTitle('YOLO Detection', "No person detected")
+                cv2.imshow('YOLO Detection', output_frame)
+                cv2.waitKey(1)
+            return output_frame, [], [0]*50, None, None
+
+        norm_data = None
+        scale_info = None
+        if normalize_for_storage:
+            norm_data, scale, torso_len, center = self.normalize_keypoints(p_pos)
+            if norm_data is not None:
+                scale_info = {'scale': scale, 'torso_length': torso_len, 'center': center}
+            else:
+                norm_data = None
+
+        self.trajectory_tracker.update(p_pos)
+        feature = Feature(p_pos)
+
+        if self.normalized_prev is None or norm_data is None:
+            vec = np.zeros((17, 2), dtype=np.float32)
+        else:
+            vec = np.array(norm_data, dtype=np.float32) - np.array(self.normalized_prev, dtype=np.float32)
+        self.vector_list.append(vec)
+        self.normalized_prev = norm_data
+
+        if self.keypoint_prev is None:
+            acc_per_kp = []
+        else:
+            acc_per_kp = [acceleration(p_pos[j], self.keypoint_prev[j],
+                                       1.0 / self.VIDEO_FRAME_SPEED) for j in range(17)]
+        self.keypoint_prev = [p.copy() for p in p_pos]
+        if acc_per_kp:
+            self.max_acc.append(max(acc_per_kp) / 1000.0)
+
+        self.compute_step(p_pos, 1.0 / self.VIDEO_FRAME_SPEED)
+
+        # 绘制骨架到原始 frame
+        draw_points = [[p[0], p[1], 1.0] for p in p_pos]
+        draw = Draw(frame, [draw_points])
+        draw.draw_select()
+
+        # ===== 裁剪并保持比例输出（不拉伸）=====
+        if self.last_roi is not None:
+            rx1, ry1, rx2, ry2 = self.last_roi
+            if rx2 > rx1 and ry2 > ry1:
+                crop = frame[ry1:ry2, rx1:rx2].copy()
+                h_crop, w_crop = crop.shape[:2]
+
+                # 计算目标宽高比
+                target_ratio = out_w / out_h
+                crop_ratio = w_crop / h_crop
+
+                if crop_ratio > target_ratio:
+                    # 以宽度为基准，上下填充
+                    new_w = out_w
+                    new_h = int(out_w / crop_ratio)
+                    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                    top = (out_h - new_h) // 2
+                    bottom = out_h - new_h - top
+                    output_frame = cv2.copyMakeBorder(resized, top, bottom, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
+                else:
+                    # 以高度为基准，左右填充
+                    new_h = out_h
+                    new_w = int(out_h * crop_ratio)
+                    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                    left = (out_w - new_w) // 2
+                    right = out_w - new_w - left
+                    output_frame = cv2.copyMakeBorder(resized, 0, 0, left, right, cv2.BORDER_CONSTANT, value=(0,0,0))
+            else:
+                output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+        else:
+            output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+        if preview:
+            cv2.setWindowTitle('YOLO Detection', f"Steps: {self.step_count}  Freq: {self.step_freq:.2f}Hz")
+            cv2.imshow('YOLO Detection', output_frame)
+            cv2.waitKey(1)
+
+        self.current_frame += 1
+        feature_frame = feature.get_all_features() if len(p_pos) >= 17 else [0]*50
+        self.all_features.append(feature_frame)
+        self.all_points.append(p_pos)
+        if norm_data is not None:
+            self.all_normalized_points.append(np.array(norm_data, dtype=np.float32))
+        else:
+            self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+
+        return output_frame, p_pos, feature_frame, norm_data, scale_info
+
+    def generate_video(self):
+        cap = cv2.VideoCapture(self.input_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            print("Cannot get frame count")
+            cap.release()
+            return
+
+        out_w, out_h = self.OUTPUT_VIDEO_SIZE
+        os.makedirs(os.path.join(self.output_dir, "result_video", "video"), exist_ok=True)
+        output_path = os.path.join(self.output_dir, "result_video", "video",
+                                   f"yolo_hrnet-{self.video_name}.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, self.VIDEO_FRAME_SPEED, (out_w, out_h))
+        if not out.isOpened():
+            print("VideoWriter failed")
+            cap.release()
+            return
+
+        frame_idx = 0
+        while True:
             success, frame = cap.read()
             if not success:
                 break
-            frame_index += 1
+            frame_idx += 1
             try:
-                processed_frame, p_pos, feature_frame, normalized_points, scale_info = process_frame(frame, normalize_for_storage=True)
-                All_feature.append(feature_frame)
-                All_point.append(p_pos)
-                # 只保存有效的归一化点（非None）
-                if normalized_points is not None:
-                    # 转换为numpy数组并确保是float32
-                    norm_array = np.array(normalized_points, dtype=np.float32)
-                    All_normalized_points.append(norm_array)
-                else:
-                    # 没有检测到人物时，添加一个全零的占位
-                    All_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
-                All_scale_info.append(scale_info)
-                out.write(processed_frame)
-                print(f"处理第 {frame_index}/{frame_count} 帧", end='\r')
-                progress_bar(frame_index, frame_count)
+                processed, _, _, _, _ = self.process_frame(frame, preview=True)
+                out.write(processed)
+                self._progress_bar(frame_idx, total_frames)
             except Exception as e:
-                print(f'处理第{frame_index}帧时出错: {str(e)[:50]}...')
-                out.write(frame)
+                print(f"\nError at frame {frame_idx}: {str(e)[:60]}")
+                out.write(np.zeros((out_h, out_w, 3), dtype=np.uint8))
                 continue
-                
-    except KeyboardInterrupt:
-        print('用户中断')
-    except Exception as e:
-        print(f'处理视频时出错: {e}')
-    finally:
+
+        cap.release()
+        out.release()
         cv2.destroyAllWindows()
-        if out is not None:
-            out.release()
-        if cap is not None:
-            cap.release()
-        print('\n视频处理完成')
-        print('Video saved to:', output_path)
-    # # 绘制轨迹曲线
-    # trajectory_tracker.plot_trajectory_curves(
-    #     save_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_trace.png"
-    # )
-    # trajectory_tracker.export_trajectory_data(
-    #     csv_path=f"{trajectory_tracker.output_dir}/hr_{video_name}_data.csv"
-    # )
-    print(f"轨迹分析图保存在: {trajectory_tracker.output_dir}")
-    frames = list(range(2, frame_count + 1))
-    print(len(Max_acc))
+        print("\nVideo saved to:", output_path)
 
-    #===================================
-    #自动eps
-    eps = auto_eps(Max_acc, 8)
-    print(f"当前自动eps为{eps}")
-    wrong_point = point_acceleration(frames, Max_acc, video_name, use_dbscan=True, eps=eps, min_samples=8)
-    #===================================
+        os.makedirs(os.path.join(self.output_dir, "features"), exist_ok=True)
+        if self.all_normalized_points:
+            np.save(f'{self.output_dir}/features/{self.video_name}_normalized_points.npy',
+                    np.stack(self.all_normalized_points, axis=0))
+        np.save(f'{self.output_dir}/features/{self.video_name}_features.npy', np.array(self.all_features))
+        np.save(f'{self.output_dir}/features/{self.video_name}_points.npy', np.array(self.all_points))
+        if len(self.vector_list) > 0:
+            vec_arr = np.stack(self.vector_list, axis=0)
+            vec_min = vec_arr.min(axis=(0, 1), keepdims=True)
+            vec_max = vec_arr.max(axis=(0, 1), keepdims=True)
+            vec_norm = (vec_arr - vec_min) / (vec_max - vec_min + 1e-8)
+            np.save(f'{self.output_dir}/features/{self.video_name}_vector.npy', vec_norm)
 
-    features_array = np.array(All_feature)
-    point_array = np.array(All_point)
-    vector_array = np.array(Vector_list)
-    vector_array = vector_array.reshape(frame_count, 17, 2)
-    # 提取 dx, dy
-    dxdy = vector_array[:, :, :2]  # (帧数, 17, 2)
-    # 计算全局最大最小值
-    dxdy_min = dxdy.min(axis=(0, 1), keepdims=True)
-    dxdy_max = dxdy.max(axis=(0, 1), keepdims=True)
-    # Min-Max 归一化到 [0, 1]
-    dxdy_normalized = (dxdy - dxdy_min) / (dxdy_max - dxdy_min + 1e-8)
-    # 直接保存 dxdy_normalized 作为向量特征
-    vector_normalized = dxdy_normalized
-    # 将列表转换为三维numpy数组 (帧数, 17, 2)
-    if All_normalized_points:
-        normalized_array = np.stack(All_normalized_points, axis=0)
-        np.save(f'result/features/{video_name}_normalized_points.npy', normalized_array)
-        print(f"归一化关键点已保存: result/features/{video_name}_normalized_points.npy")
-    else:
-        print("警告: 没有归一化关键点数据")
-    
-    np.save(f'result/features/{video_name}_features.npy', features_array)
-    np.save(f'result/features/{video_name}_points.npy', point_array)
-    np.save(f'result/features/{video_name}_vector.npy', vector_normalized)
+        if len(self.max_acc) > 0:
+            eps = auto_eps(self.max_acc, 8)
+            print(f"Auto eps: {eps}")
+            frames = list(range(2, self.current_frame + 1)) if self.current_frame > 1 else [1]
+            point_acceleration(frames, self.max_acc, self.video_name,
+                               use_dbscan=True, eps=eps, min_samples=8)
 
-def progress_bar(current, total, bar_length=30, prefix="进度"):
-    percent = current / total
-    filled_length = int(bar_length * percent)
-    bar = '█' * filled_length + '░' * (bar_length - filled_length)
-    sys.stdout.write(f'\r{prefix}: |{bar}| {percent*100:.1f}% ({current}/{total})')
-    sys.stdout.flush()
-    
-    if current == total:
-        print()
-
-def change_detector(a,b):
-    if a[0]>b[0] and step[-1] != 1:
-        step.append(1)
-        return True
-    elif a[0]<b[0] and step[-1] != 2:
-        step.append(2)
-        return True
+    @staticmethod
+    def _progress_bar(current, total, bar_length=30, prefix="进度"):
+        percent = current / total
+        filled = int(bar_length * percent)
+        bar = '█' * filled + '░' * (bar_length - filled)
+        sys.stdout.write(f'\r{prefix}: |{bar}| {percent*100:.1f}% ({current}/{total})')
+        sys.stdout.flush()
+        if current == total:
+            print()
 
 if __name__ == '__main__':
-    START_TIME = time.time()
-    generate_video(input_path)
-    current_time = time.time()
-    print(f"生成视频总耗时：{show_time(START_TIME, current_time)}")
-    print(f"步数: {step_count}")
+    input_path = 'video_origin/data_video/use/run_woman.mp4'
+    processor = VideoProcessor(input_path)
+    start = time.time()
+    processor.generate_video()
+    elapsed = show_time(start, time.time())
+    print(f"Total time: {elapsed}")

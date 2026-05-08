@@ -184,40 +184,91 @@ def get_norm_points(list_p):
     return p_norm,long
 
 def visualize_comparison(imgpath1, imgpath2):
-    """可视化两张图片的归一化对比"""
-    # 创建黑色背景的归一化姿态图
+    """可视化两张图片的归一化对比（基于髋关节中点对齐）"""
+    # 获取关键点
     list_p1 = process_frame(imgpath1)
     list_p2 = process_frame(imgpath2)
-    p_norm1,torso_length1 = get_norm_points(list_p1)
-    p_norm2,torso_length2 = get_norm_points(list_p2)
-    h, w = 400, 400
-    norm_img1 = np.zeros((h, w, 3), dtype=np.uint8)
-    norm_img2 = np.zeros((h, w, 3), dtype=np.uint8)
     
-    # 在归一化图上绘制姿态
+    if not list_p1 or not list_p2:
+        print("错误：无法检测到关键点")
+        return
+    
+    p_norm1, torso_length1 = get_norm_points(list_p1)
+    p_norm2, torso_length2 = get_norm_points(list_p2)
+    
+    # 创建画布
+    h, w = 600, 600
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # 画布中心作为髋关节中点位置
     center_x, center_y = w//2, h//2
-    scale = 100  # 缩放系数，使显示更清晰
+    scale = 120  # 缩放系数
     
-    # 绘制第一张图的归一化姿态
+    # 获取归一化后的髋关节中点坐标（应该是0,0）
+    # 在get_norm_points中，髋关节中点已经是原点(0,0)
+    
+    # 绘制图1的姿态（绿色）
+    # 连接线段
+    connections = [
+        # 头部
+        (0, 1), (0, 2), (1, 3), (2, 4),  # 头部连接
+        # 上肢
+        (5, 6), (5, 7), (6, 8), (7, 9), (8, 10),  # 手臂
+        # 躯干
+        (5, 11), (6, 12), (11, 12),  # 躯干
+        # 下肢
+        (11, 13), (12, 14), (13, 15), (14, 16)  # 腿
+    ]
+    
+    # 绘制图1的连接线（绿色）
+    for conn in connections:
+        if conn[0] < len(p_norm1) and conn[1] < len(p_norm1):
+            x1 = int(center_x + p_norm1[conn[0]][0] * scale)
+            y1 = int(center_y + p_norm1[conn[0]][1] * scale)
+            x2 = int(center_x + p_norm1[conn[1]][0] * scale)
+            y2 = int(center_y + p_norm1[conn[1]][1] * scale)
+            cv2.line(canvas, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    
+    # 绘制图1的关键点（绿色圆点）
     for i in range(len(p_norm1)):
         x = int(center_x + p_norm1[i][0] * scale)
         y = int(center_y + p_norm1[i][1] * scale)
-        cv2.circle(norm_img1, (x, y), 4, (0, 255, 0), -1)
+        cv2.circle(canvas, (x, y), 5, (0, 255, 0), -1)
     
-    # 绘制第二张图的归一化姿态
+    # 绘制图2的连接线（红色，半透明效果使用实线）
+    for conn in connections:
+        if conn[0] < len(p_norm2) and conn[1] < len(p_norm2):
+            x1 = int(center_x + p_norm2[conn[0]][0] * scale)
+            y1 = int(center_y + p_norm2[conn[0]][1] * scale)
+            x2 = int(center_x + p_norm2[conn[1]][0] * scale)
+            y2 = int(center_y + p_norm2[conn[1]][1] * scale)
+            cv2.line(canvas, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    
+    # 绘制图2的关键点（红色圆点）
     for i in range(len(p_norm2)):
         x = int(center_x + p_norm2[i][0] * scale)
         y = int(center_y + p_norm2[i][1] * scale)
-        cv2.circle(norm_img2, (x, y), 4, (0, 0, 255), -1)
+        cv2.circle(canvas, (x, y), 5, (0, 0, 255), -1)
+    
+    # 绘制髋关节中点（黄色标记）
+    cv2.circle(canvas, (center_x, center_y), 8, (0, 255, 255), -1)
     
     # 添加文字信息
-    cv2.putText(norm_img1, f"body: {torso_length1:.0f}px", (10, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(norm_img2, f"body: {torso_length2:.0f}px", (10, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(canvas, "Image 1", (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(canvas, "Image 2", (10, 60), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(canvas, f"body1: {torso_length1:.1f}px", (10, 120), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    cv2.putText(canvas, f"body2: {torso_length2:.1f}px", (10, 145), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
     
-    # 显示对比结果
-    cv2.imshow("归一化姿态对比 - 绿色:图1, 红色:图2", np.hstack([norm_img1, norm_img2]))
+    # 添加说明
+    cv2.putText(canvas, "Both normalized to same hip center (scale using torso length)", 
+                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    
+    # 显示结果
+    cv2.imshow("Pose Comparison - Hip Center Alignment", canvas)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
