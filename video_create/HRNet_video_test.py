@@ -14,9 +14,7 @@ from time_utils import show_time
 from ultralytics import YOLO
 from Feature import *
 from matplotlib import rcParams
-
 rcParams['font.family'] = 'SimHei'
-
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 24
     YOLO_CONF_THRESHOLD = 0.5
@@ -39,7 +37,7 @@ class VideoProcessor:
         self.person_info = None
         self.hrnet_transform = None
 
-        # 仅存储原始关键点和归一化关键点（用于后处理）
+        # 仅存储原始关键点和归一化关键点
         self.all_points = []               # 每帧原始关键点 (17,2)
         self.all_normalized_points = []    # 每帧归一化关键点 (17,2)
         self.all_scale_info = []           # 每帧缩放信息
@@ -50,11 +48,14 @@ class VideoProcessor:
         self.max_acc = []
         self.all_features = []
 
-        # 步频状态（后处理时也会使用）
+        # 步频状态
         self.step_state = 0
         self.step_count = 0
         self.step_freq = 0.0
         self.last_step_time = 0.0
+
+        self.padding = 30 #扩展大小
+    
 
     def init_models(self):
         if self.device is not None:
@@ -99,13 +100,13 @@ class VideoProcessor:
                 conf = float(box.conf[0])
                 if cls_id != 0 or conf < self.YOLO_CONF_THRESHOLD:
                     continue
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy() #ROI对角坐标
                 area = (x2 - x1) * (y2 - y1)
                 persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area))
         if not persons:
             return None, 0
-        persons.sort(key=lambda x: x[2], reverse=True)
-        return persons[0][0], persons[0][1]
+        persons.sort(key=lambda x: x[2], reverse=True) #按面积从大到小排序
+        return persons[0][0], persons[0][1] #返回面积最大的坐标，置信度
 
     def normalize_keypoints(self, p_pos):
         if len(p_pos) < 17:
@@ -135,15 +136,14 @@ class VideoProcessor:
         x2 = max(0, min(x2, w - 1))
         y2 = max(0, min(y2, h - 1))
 
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)  #画出框
         cv2.putText(frame, f"Person: {conf:.2f}", (int(x1), max(20, int(y1)-10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        padding = 30
-        roi_x1 = max(0, int(x1) - padding)
-        roi_y1 = max(0, int(y1) - padding)
-        roi_x2 = min(w, int(x2) + padding)
-        roi_y2 = min(h, int(y2) + padding)
+        roi_x1 = max(0, int(x1) - self.padding)
+        roi_y1 = max(0, int(y1) - self.padding)
+        roi_x2 = min(w, int(x2) + self.padding)
+        roi_y2 = min(h, int(y2) + self.padding)
         person_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
         if person_roi.size == 0:
             return [[]], []
@@ -167,7 +167,7 @@ class VideoProcessor:
                                      self.person_info["flip_pairs"]),
             )
             flip_out[..., 1:] = flip_out.clone()[..., 0:-1]
-            outputs = (outputs + flip_out) * 0.5
+            outputs = (outputs + flip_out) * 0.5  #翻转运算取平均
 
             keypoints, scores = transforms.get_final_preds(outputs, [target["reverse_trans"]], True)
             keypoints = np.squeeze(keypoints)
@@ -192,7 +192,6 @@ class VideoProcessor:
             list_p, _ = self.predict_frame(frame)
             p_pos = get_keypoints(list_p)
 
-            # 格式校验
             if p_pos and len(p_pos) >= 17:
                 validated = []
                 for pt in p_pos:
@@ -219,7 +218,7 @@ class VideoProcessor:
                 return output_frame, [], None, None, None   # feature_frame = None
 
             norm_data = None
-            scale_info = None
+            scale_info = None #字典存储缩放数据
             if normalize_for_storage:
                 norm_data, scale, torso_len, center = self.normalize_keypoints(p_pos)
                 if norm_data is not None:
@@ -228,7 +227,7 @@ class VideoProcessor:
                     norm_data = None
 
             self.trajectory_tracker.update(p_pos)
-
+            #绘制关键点及连线
             draw_points = [[p[0], p[1], 1.0] for p in p_pos]
             draw = Draw(frame, [draw_points])
             draw.draw_select()
@@ -264,7 +263,6 @@ class VideoProcessor:
                 cv2.imshow('YOLO Detection', output_frame)
                 cv2.waitKey(1)
 
-            # 保存数据供后处理（不计算特征）
             self.all_points.append(p_pos)
             if norm_data is not None:
                 self.all_normalized_points.append(np.array(norm_data, dtype=np.float32))
@@ -292,7 +290,6 @@ class VideoProcessor:
         self.max_acc.clear()
         self.all_features.clear()
         keypoint_prev = None
-        normalized_prev = None
         step_state = 0
         step_count = 0
         step_freq = 0.0
@@ -306,17 +303,16 @@ class VideoProcessor:
 
             if not p_pos or len(p_pos) < 17:
                 keypoint_prev = None
-                normalized_prev = None
                 self.all_features.append(np.zeros(50, dtype=np.float32))
                 self.vector_list.append(np.zeros((17,2), dtype=np.float32))
                 continue
 
-            feature = Feature(p_pos)
+            feature = Feature(norm_data) #获取手工特征
             feat = feature.get_all_features()
             self.all_features.append(np.array(feat, dtype=np.float32))
 
-            if norm_data_fut is None or len(norm_data_fut) == 0 or norm_data is None or len(norm_data) == 0:
-                vec = np.zeros((17,2), dtype=np.float32)
+            if norm_data_fut is None or len(norm_data_fut) == 0 or norm_data is None or len(norm_data) == 0: #获取向量特征
+                vec = self.vector_list[-1]
             else:
                 vec = np.array(norm_data_fut, dtype=np.float32) - np.array(norm_data, dtype=np.float32)
             self.vector_list.append(vec)
@@ -348,7 +344,6 @@ class VideoProcessor:
                                     step_freq = round(1.0 / gap, 3)
                             last_step_time = current_time
                         step_state = new_state
-
         # 处理最后一帧
         if total > 0:
             last_idx = total - 1
@@ -371,10 +366,8 @@ class VideoProcessor:
 
         out_dir = os.path.join(self.output_dir, "features")
         os.makedirs(out_dir, exist_ok=True)
-
         np.save(os.path.join(out_dir, f"{self.video_name}_normalized_points.npy"),
                 np.stack(self.all_normalized_points, axis=0))
-
         np.save(os.path.join(out_dir, f"{self.video_name}_features.npy"),
                 np.array(self.all_features, dtype=np.float32))
         
@@ -426,7 +419,6 @@ class VideoProcessor:
                 print(f"\nError at frame {frame_idx}: {str(e)[:80]}")
                 out.write(np.zeros((out_h, out_w, 3), dtype=np.uint8))
                 continue
-
         cap.release()
         out.release()
         cv2.destroyAllWindows()
@@ -444,7 +436,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'video_origin/data_video/use/run_woman.mp4'
+    input_path = 'video_origin/data_video/use/run_man.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

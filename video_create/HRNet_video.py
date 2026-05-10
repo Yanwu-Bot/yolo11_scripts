@@ -14,9 +14,7 @@ from time_utils import show_time
 from ultralytics import YOLO
 from Feature import *
 from matplotlib import rcParams
-
 rcParams['font.family'] = 'SimHei'
-
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 24
     YOLO_CONF_THRESHOLD = 0.5
@@ -39,19 +37,24 @@ class VideoProcessor:
         self.person_info = None
         self.hrnet_transform = None
 
-        self.keypoint_prev = None
-        self.normalized_prev = None
-        self.max_acc = []
+        # 仅存储原始关键点和归一化关键点
+        self.all_points = []               # 每帧原始关键点 (17,2)
+        self.all_normalized_points = []    # 每帧归一化关键点 (17,2)
+        self.all_scale_info = []           # 每帧缩放信息
+        self.last_roi = None
+
+        # 后处理时会填充的列表（初始为空）
         self.vector_list = []
+        self.max_acc = []
+        self.all_features = []
+
+        # 步频状态
         self.step_state = 0
         self.step_count = 0
         self.step_freq = 0.0
         self.last_step_time = 0.0
-        self.current_frame = 0
-        self.all_features = []
-        self.all_points = []
-        self.all_normalized_points = []
-        self.last_roi = None
+
+        self.padding = 30 #扩展大小
 
     def init_models(self):
         if self.device is not None:
@@ -96,13 +99,13 @@ class VideoProcessor:
                 conf = float(box.conf[0])
                 if cls_id != 0 or conf < self.YOLO_CONF_THRESHOLD:
                     continue
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy() #ROI对角坐标
                 area = (x2 - x1) * (y2 - y1)
                 persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area))
         if not persons:
             return None, 0
-        persons.sort(key=lambda x: x[2], reverse=True)
-        return persons[0][0], persons[0][1]
+        persons.sort(key=lambda x: x[2], reverse=True) #按面积从大到小排序
+        return persons[0][0], persons[0][1] #返回面积最大的坐标，置信度
 
     def normalize_keypoints(self, p_pos):
         if len(p_pos) < 17:
@@ -132,15 +135,14 @@ class VideoProcessor:
         x2 = max(0, min(x2, w - 1))
         y2 = max(0, min(y2, h - 1))
 
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)  #画出框
         cv2.putText(frame, f"Person: {conf:.2f}", (int(x1), max(20, int(y1)-10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        padding = 30
-        roi_x1 = max(0, int(x1) - padding)
-        roi_y1 = max(0, int(y1) - padding)
-        roi_x2 = min(w, int(x2) + padding)
-        roi_y2 = min(h, int(y2) + padding)
+        roi_x1 = max(0, int(x1) - self.padding)
+        roi_y1 = max(0, int(y1) - self.padding)
+        roi_x2 = min(w, int(x2) + self.padding)
+        roi_y2 = min(h, int(y2) + self.padding)
         person_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
         if person_roi.size == 0:
             return [[]], []
@@ -164,7 +166,7 @@ class VideoProcessor:
                                      self.person_info["flip_pairs"]),
             )
             flip_out[..., 1:] = flip_out.clone()[..., 0:-1]
-            outputs = (outputs + flip_out) * 0.5
+            outputs = (outputs + flip_out) * 0.5  #翻转运算取平均
 
             keypoints, scores = transforms.get_final_preds(outputs, [target["reverse_trans"]], True)
             keypoints = np.squeeze(keypoints)
@@ -182,139 +184,206 @@ class VideoProcessor:
                     keypoints_list.append([0, 0, 0.0])
         return [keypoints_list], scores
 
-    def compute_step(self, p_pos, time_gap):
-        if len(p_pos) < 17:
-            return
-        try:
-            left_ankle_y = p_pos[15][1]
-            right_ankle_y = p_pos[16][1]
-        except (TypeError, IndexError):
-            return
-        delta = left_ankle_y - right_ankle_y
-        if abs(delta) > 10:
-            current_time = self.current_frame * time_gap
-            if current_time - self.last_step_time >= self.STEP_MIN_GAP:
-                new_state = 1 if delta > 0 else 2
-                if new_state != self.step_state and self.step_state != 0:
-                    self.step_count += 1
-                    if self.step_count > 1:
-                        gap = current_time - self.last_step_time
-                        if gap > 0.1:
-                            self.step_freq = round(1.0 / gap, 3)
-                    self.last_step_time = current_time
-                self.step_state = new_state
-
     def process_frame(self, frame, preview=True, normalize_for_storage=True):
+        """处理单帧：只预测关键点、归一化、绘制、裁剪输出，不计算特征"""
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
+        try:
+            list_p, _ = self.predict_frame(frame)
+            p_pos = get_keypoints(list_p)
 
-        list_p, _ = self.predict_frame(frame)
-        p_pos = get_keypoints(list_p)
-
-        if p_pos and len(p_pos) >= 17:
-            validated = []
-            for pt in p_pos:
-                if isinstance(pt, (list, tuple)) and len(pt) == 2:
-                    validated.append([float(pt[0]), float(pt[1])])
+            if p_pos and len(p_pos) >= 17:
+                validated = []
+                for pt in p_pos:
+                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                        validated.append([float(pt[0]), float(pt[1])])
+                    else:
+                        validated = []
+                        break
+                if len(validated) >= 17:
+                    p_pos = validated
                 else:
-                    validated = []
-                    break
-            if len(validated) >= 17:
-                p_pos = validated
-            else:
-                p_pos = []
+                    p_pos = []
 
-        if not p_pos or len(p_pos) < 17:
-            self.keypoint_prev = None
-            self.normalized_prev = None
-            output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-            if preview:
-                cv2.setWindowTitle('YOLO Detection', "No person detected")
-                cv2.imshow('YOLO Detection', output_frame)
-                cv2.waitKey(1)
-            return output_frame, [], [0]*50, None, None
+            if not p_pos or len(p_pos) < 17:
+                # 无人帧：输出黑色帧，保存空数据
+                output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+                if preview:
+                    cv2.setWindowTitle('YOLO Detection', "No person")
+                    cv2.imshow('YOLO Detection', output_frame)
+                    cv2.waitKey(1)
+                self.all_points.append([])
+                self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+                self.all_scale_info.append(None)
+                return output_frame, [], None, None, None   # feature_frame = None
 
-        norm_data = None
-        scale_info = None
-        if normalize_for_storage:
-            norm_data, scale, torso_len, center = self.normalize_keypoints(p_pos)
-            if norm_data is not None:
-                scale_info = {'scale': scale, 'torso_length': torso_len, 'center': center}
-            else:
-                norm_data = None
-
-        self.trajectory_tracker.update(p_pos)
-        feature = Feature(p_pos)
-
-        if self.normalized_prev is None or norm_data is None:
-            vec = np.zeros((17, 2), dtype=np.float32)
-        else:
-            vec = np.array(norm_data, dtype=np.float32) - np.array(self.normalized_prev, dtype=np.float32)
-        self.vector_list.append(vec)
-        self.normalized_prev = norm_data
-
-        if self.keypoint_prev is None:
-            acc_per_kp = []
-        else:
-            acc_per_kp = [acceleration(p_pos[j], self.keypoint_prev[j],
-                                       1.0 / self.VIDEO_FRAME_SPEED) for j in range(17)]
-        self.keypoint_prev = [p.copy() for p in p_pos]
-        if acc_per_kp:
-            self.max_acc.append(max(acc_per_kp) / 1000.0)
-
-        self.compute_step(p_pos, 1.0 / self.VIDEO_FRAME_SPEED)
-
-        # 绘制骨架到原始 frame
-        draw_points = [[p[0], p[1], 1.0] for p in p_pos]
-        draw = Draw(frame, [draw_points])
-        draw.draw_select()
-
-        # ===== 裁剪并保持比例输出（不拉伸）=====
-        if self.last_roi is not None:
-            rx1, ry1, rx2, ry2 = self.last_roi
-            if rx2 > rx1 and ry2 > ry1:
-                crop = frame[ry1:ry2, rx1:rx2].copy()
-                h_crop, w_crop = crop.shape[:2]
-
-                # 计算目标宽高比
-                target_ratio = out_w / out_h
-                crop_ratio = w_crop / h_crop
-
-                if crop_ratio > target_ratio:
-                    # 以宽度为基准，上下填充
-                    new_w = out_w
-                    new_h = int(out_w / crop_ratio)
-                    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-                    top = (out_h - new_h) // 2
-                    bottom = out_h - new_h - top
-                    output_frame = cv2.copyMakeBorder(resized, top, bottom, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
+            norm_data = None
+            scale_info = None #字典存储缩放数据
+            if normalize_for_storage:
+                norm_data, scale, torso_len, center = self.normalize_keypoints(p_pos)
+                if norm_data is not None:
+                    scale_info = {'scale': scale, 'torso_length': torso_len, 'center': center}
                 else:
-                    # 以高度为基准，左右填充
-                    new_h = out_h
-                    new_w = int(out_h * crop_ratio)
-                    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-                    left = (out_w - new_w) // 2
-                    right = out_w - new_w - left
-                    output_frame = cv2.copyMakeBorder(resized, 0, 0, left, right, cv2.BORDER_CONSTANT, value=(0,0,0))
+                    norm_data = None
+
+            self.trajectory_tracker.update(p_pos)
+            #绘制关键点及连线
+            draw_points = [[p[0], p[1], 1.0] for p in p_pos]
+            draw = Draw(frame, [draw_points])
+            draw.draw_select()
+
+            if self.last_roi is not None:
+                rx1, ry1, rx2, ry2 = self.last_roi
+                if rx2 > rx1 and ry2 > ry1:
+                    crop = frame[ry1:ry2, rx1:rx2].copy()
+                    h_crop, w_crop = crop.shape[:2]
+                    target_ratio = out_w / out_h
+                    crop_ratio = w_crop / h_crop
+                    if crop_ratio > target_ratio:
+                        new_w = out_w
+                        new_h = int(out_w / crop_ratio)
+                        resized = cv2.resize(crop, (new_w, new_h))
+                        top = (out_h - new_h) // 2
+                        bottom = out_h - new_h - top
+                        output_frame = cv2.copyMakeBorder(resized, top, bottom, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
+                    else:
+                        new_h = out_h
+                        new_w = int(out_h * crop_ratio)
+                        resized = cv2.resize(crop, (new_w, new_h))
+                        left = (out_w - new_w) // 2
+                        right = out_w - new_w - left
+                        output_frame = cv2.copyMakeBorder(resized, 0, 0, left, right, cv2.BORDER_CONSTANT, value=(0,0,0))
+                else:
+                    output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
             else:
                 output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-        else:
+
+            if preview:
+                cv2.setWindowTitle('YOLO Detection', "Processing")
+                cv2.imshow('YOLO Detection', output_frame)
+                cv2.waitKey(1)
+
+            self.all_points.append(p_pos)
+            if norm_data is not None:
+                self.all_normalized_points.append(np.array(norm_data, dtype=np.float32))
+            else:
+                self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+            self.all_scale_info.append(scale_info)
+
+            return output_frame, p_pos, None, norm_data, scale_info
+
+        except Exception as e:
+            print(f"Error in process_frame: {str(e)[:80]}")
             output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+            self.all_points.append([])
+            self.all_normalized_points.append(np.zeros((17,2), dtype=np.float32))
+            self.all_scale_info.append(None)
+            return output_frame, [], None, None, None
 
-        if preview:
-            cv2.setWindowTitle('YOLO Detection', f"Steps: {self.step_count}  Freq: {self.step_freq:.2f}Hz")
-            cv2.imshow('YOLO Detection', output_frame)
-            cv2.waitKey(1)
+    def compute_and_save_features(self):
+        """在所有帧处理完成后，统一计算特征、向量、加速度、步频并保存"""
+        total = len(self.all_points)
+        time_gap = 1.0 / self.VIDEO_FRAME_SPEED
 
-        self.current_frame += 1
-        feature_frame = feature.get_all_features() if len(p_pos) >= 17 else [0]*50
-        self.all_features.append(feature_frame)
-        self.all_points.append(p_pos)
-        if norm_data is not None:
-            self.all_normalized_points.append(np.array(norm_data, dtype=np.float32))
-        else:
-            self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+        # 重置状态
+        self.vector_list.clear()
+        self.max_acc.clear()
+        self.all_features.clear()
+        keypoint_prev = None
+        step_state = 0
+        step_count = 0
+        step_freq = 0.0
+        last_step_time = 0.0
 
-        return output_frame, p_pos, feature_frame, norm_data, scale_info
+        # 向量计算需要下一帧手势数据，循环到倒数第二帧
+        for i in range(total - 1):
+            p_pos = self.all_points[i]
+            norm_data = self.all_normalized_points[i]        # 当前帧归一化关键点
+            norm_data_fut = self.all_normalized_points[i+1]  # 下一帧归一化关键点
+
+            if not p_pos or len(p_pos) < 17:
+                keypoint_prev = None
+                self.all_features.append(np.zeros(50, dtype=np.float32))
+                self.vector_list.append(np.zeros((17,2), dtype=np.float32))
+                continue
+
+            feature = Feature(norm_data) #获取手工特征
+            feat = feature.get_all_features()
+            self.all_features.append(np.array(feat, dtype=np.float32))
+
+            if norm_data_fut is None or len(norm_data_fut) == 0 or norm_data is None or len(norm_data) == 0: #获取向量特征
+                vec = self.vector_list[-1]
+            else:
+                vec = np.array(norm_data_fut, dtype=np.float32) - np.array(norm_data, dtype=np.float32)
+            self.vector_list.append(vec)
+
+            if keypoint_prev is None:
+                acc_per_kp = []
+            else:
+                acc_per_kp = [acceleration(p_pos[j], keypoint_prev[j], time_gap) for j in range(17)]
+            keypoint_prev = [p.copy() for p in p_pos]
+            if acc_per_kp:
+                self.max_acc.append(max(acc_per_kp) / 1000.0)
+
+            if len(p_pos) >= 17:
+                try:
+                    left_ankle_y = p_pos[15][1]
+                    right_ankle_y = p_pos[16][1]
+                except:
+                    continue
+                delta = left_ankle_y - right_ankle_y
+                if abs(delta) > 10:
+                    current_time = (i+1) * time_gap
+                    if current_time - last_step_time >= self.STEP_MIN_GAP:
+                        new_state = 1 if delta > 0 else 2
+                        if new_state != step_state and step_state != 0:
+                            step_count += 1
+                            if step_count > 1:
+                                gap = current_time - last_step_time
+                                if gap > 0.1:
+                                    step_freq = round(1.0 / gap, 3)
+                            last_step_time = current_time
+                        step_state = new_state
+        # 处理最后一帧
+        if total > 0:
+            last_idx = total - 1
+            p_pos_last = self.all_points[last_idx]
+            if p_pos_last and len(p_pos_last) >= 17:
+                # 手工特征
+                feature = Feature(p_pos_last)
+                feat = feature.get_all_features()
+                self.all_features.append(np.array(feat, dtype=np.float32))
+            else:
+                self.all_features.append(np.zeros(50, dtype=np.float32))
+
+            if self.vector_list:
+                self.vector_list.append(self.vector_list[-1].copy())  # 使用倒数第二帧的向量
+            else:
+                self.vector_list.append(np.zeros((17,2), dtype=np.float32))
+
+        self.step_count = step_count
+        self.step_freq = step_freq
+
+        out_dir = os.path.join(self.output_dir, "features")
+        os.makedirs(out_dir, exist_ok=True)
+        np.save(os.path.join(out_dir, f"{self.video_name}_normalized_points.npy"),
+                np.stack(self.all_normalized_points, axis=0))
+        np.save(os.path.join(out_dir, f"{self.video_name}_features.npy"),
+                np.array(self.all_features, dtype=np.float32))
+        
+        if len(self.vector_list) > 0:
+            vec_arr = np.stack(self.vector_list, axis=0)
+            vec_min = vec_arr.min(axis=(0,1), keepdims=True)
+            vec_max = vec_arr.max(axis=(0,1), keepdims=True)
+            vec_norm = (vec_arr - vec_min) / (vec_max - vec_min + 1e-8)
+            np.save(os.path.join(out_dir, f"{self.video_name}_vector.npy"), vec_norm)
+
+        if len(self.max_acc) > 0:
+            eps = auto_eps(self.max_acc, 8)
+            print(f"Auto eps: {eps}")
+            frames = list(range(2, len(self.max_acc) + 2))
+            point_acceleration(frames, self.max_acc, self.video_name,
+                            use_dbscan=True, eps=eps, min_samples=8)
+        print(f"所有特征已保存至 {out_dir}")
 
     def generate_video(self):
         cap = cv2.VideoCapture(self.input_path)
@@ -346,34 +415,14 @@ class VideoProcessor:
                 out.write(processed)
                 self._progress_bar(frame_idx, total_frames)
             except Exception as e:
-                print(f"\nError at frame {frame_idx}: {str(e)[:60]}")
+                print(f"\nError at frame {frame_idx}: {str(e)[:80]}")
                 out.write(np.zeros((out_h, out_w, 3), dtype=np.uint8))
                 continue
-
         cap.release()
         out.release()
         cv2.destroyAllWindows()
         print("\nVideo saved to:", output_path)
-
-        os.makedirs(os.path.join(self.output_dir, "features"), exist_ok=True)
-        if self.all_normalized_points:
-            np.save(f'{self.output_dir}/features/{self.video_name}_normalized_points.npy',
-                    np.stack(self.all_normalized_points, axis=0))
-        np.save(f'{self.output_dir}/features/{self.video_name}_features.npy', np.array(self.all_features))
-        np.save(f'{self.output_dir}/features/{self.video_name}_points.npy', np.array(self.all_points))
-        if len(self.vector_list) > 0:
-            vec_arr = np.stack(self.vector_list, axis=0)
-            vec_min = vec_arr.min(axis=(0, 1), keepdims=True)
-            vec_max = vec_arr.max(axis=(0, 1), keepdims=True)
-            vec_norm = (vec_arr - vec_min) / (vec_max - vec_min + 1e-8)
-            np.save(f'{self.output_dir}/features/{self.video_name}_vector.npy', vec_norm)
-
-        if len(self.max_acc) > 0:
-            eps = auto_eps(self.max_acc, 8)
-            print(f"Auto eps: {eps}")
-            frames = list(range(2, self.current_frame + 1)) if self.current_frame > 1 else [1]
-            point_acceleration(frames, self.max_acc, self.video_name,
-                               use_dbscan=True, eps=eps, min_samples=8)
+        self.compute_and_save_features()
 
     @staticmethod
     def _progress_bar(current, total, bar_length=30, prefix="进度"):
