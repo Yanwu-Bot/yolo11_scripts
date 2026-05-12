@@ -169,6 +169,7 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
             'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1
         }
         self.normalize = normalize
+        self.dist_th = None  #距离阈值，控制负样本生成
 
         if os.path.isdir(video_source):
             video_files = [os.path.join(video_source, f)
@@ -200,6 +201,8 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         self.save_dataset(save_path)
+        self.get_threshold(len(self.window_list))
+
 
     def save_dataset(self, save_path):
         """将窗口列表打包保存为 .npz 文件"""
@@ -215,7 +218,6 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
                 windows=window_array,
                 video_indices=video_indices,
                 start_frames=start_frames,
-                video_lengths=np.array(self.video_lengths),
                 window_size=self.window_size,
                 stride=self.stride)
         print(f"数据集已保存至 {save_path}")
@@ -287,16 +289,38 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
         # 正样本：对 anchor 做一次随机增强
         positive = self._random_transform(anchor_data)
         # 负样本
-        negative = self._get_negative_sample(anchor_video_idx, anchor_start)
-
+        negative = self._get_negative_sample(anchor_video_idx, anchor_start) 
         # 转换为 (C, T, V) 格式以适用于 ST-GCN
+        dist = np.mean(np.linalg.norm(anchor_data - negative, axis=-1))
+        #根据阈值选取负样本
+        for i in range(10):
+            if(dist < self.dist_th):
+                negative = self._get_negative_sample(anchor_video_idx, anchor_start) 
+                dist = np.mean(np.linalg.norm(anchor_data - negative, axis=-1))
+            else:
+                break
         def to_stgcn(data):
             # data: (T, V, C) -> (C, T, V)
             return torch.FloatTensor(data).permute(2, 0, 1)
 
         return to_stgcn(anchor_data), to_stgcn(positive), to_stgcn(negative)
+    
+    def get_threshold(self,length):
+        distances = []
+        # 随机抽样一定数量的负样本对计算距离
+        for _ in range(length):  # 抽样1000次
+            idx = random.randint(0, len(self.window_list)-1)
+            anchor_info = self.window_list[idx]
+            anchor_video_idx, anchor_start, anchor_data = anchor_info
+            negative = self._get_negative_sample(anchor_video_idx, anchor_start)
+            dist = np.mean(np.linalg.norm(anchor_data - negative, axis=-1))
+            distances.append(dist)
+        # 统计并打印
+        distances = np.array(distances)
+        self.dist_th = np.percentile(distances,25)
+        print(f"距离统计: 均值={distances.mean():.2f}, 中位数={np.median(distances):.2f}, "
+            f"25%分位数={np.percentile(distances,25):.2f}, 75%分位数={np.percentile(distances,75):.2f}")
 
-# ========== 使用示例 ==========
 if __name__ == '__main__':
     video_folder = 'video_origin/data_video/dataset/'
     dataset = ContrastiveWindowDataset(

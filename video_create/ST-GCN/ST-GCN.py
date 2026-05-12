@@ -228,7 +228,6 @@ class ContrastiveDatasetFromFile(Dataset):
             return torch.FloatTensor(data).permute(2, 0, 1)
         return to_stgcn(anchor), to_stgcn(positive), to_stgcn(negative)
 
-# ========== 训练函数 ==========
 def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ContrastiveEncoder(output_dim=128).to(device)
@@ -260,7 +259,6 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
 
-# ========== 主程序 ==========
 if __name__ == '__main__':
     # 设置数据集路径（请根据实际修改）
     npz_path = 'result/GCN/dataset/dataset.npz'
