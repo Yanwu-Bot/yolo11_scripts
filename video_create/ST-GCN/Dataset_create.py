@@ -166,7 +166,7 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
         self.neg_cross_ratio = neg_cross_ratio
         self.temporal_threshold = temporal_threshold
         self.transform_params = transform_params or {
-            'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1
+            'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1, 'reverse':0.2, 'GB':0.7, 'shear':0.1
         }
         self.normalize = normalize
         self.dist_th = None  #距离阈值，控制负样本生成
@@ -252,6 +252,33 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
             mask_prob = self.transform_params['mask']
             mask = np.random.binomial(1, 1 - mask_prob, size=(T, V, 1)) #生成遮挡，1-mask_prob概率为1
             w = w * mask
+        # 窗口翻转
+        if 'reverse' in self.transform_params:
+            if random.random() < self.transform_params['reverse']:
+                w = w[::-1].copy()
+        # 高斯模糊
+        if 'GB' in self.transform_params:
+            if random.random() < self.transform_params['GB']:
+                sigma = random.uniform(0.3, 1) 
+                radius = int(4 * sigma + 0.5)
+                t = np.arange(-radius, radius + 1)
+                kernel = np.exp(-0.5 * (t / sigma) ** 2)
+                kernel /= kernel.sum()   # 归一化高斯核
+                # 对每个关节的每个坐标维度沿时间轴做卷积
+                T, V, C = w.shape
+                w_smooth = np.zeros_like(w)
+                for v in range(V):
+                    for c in range(C):
+                        w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
+                w = w_smooth
+        # 剪切让形状变形
+        if 'shear' in self.transform_params:
+            shx = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
+            shy = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
+            x_old = w[..., 0].copy()
+            y_old = w[..., 1].copy()
+            w[..., 0] = x_old + shx * y_old
+            w[..., 1] = y_old + shy * x_old
         return w
 
     def _get_negative_sample(self, anchor_video_idx, anchor_start):
@@ -329,7 +356,7 @@ if __name__ == '__main__':
         stride=5,
         neg_cross_ratio=0.7,
         temporal_threshold=20,
-        transform_params={'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1},
+        transform_params={'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1, 'reverse':0.2, 'GB':0.3, 'shear':0.05},
         normalize=True,
         save_path='result/GCN/dataset/dataset.npz'
     )

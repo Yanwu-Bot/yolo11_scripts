@@ -141,21 +141,23 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
     return F.cross_entropy(logits, labels)
 
-# ========== 数据集类 (从 .npz 加载) ==========
+# ========== 数据集类 (从 .npz 加载，与 Dataset_create.py 增强一致) ==========
 class ContrastiveDatasetFromFile(Dataset):
     """从已保存的 .npz 数据集文件加载窗口，动态生成三元组"""
     def __init__(self, npz_path, window_size=10,
                  neg_cross_ratio=0.7, temporal_threshold=20,
                  transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
-        self.windows = data['windows']                  # (N, W, 17, 2)
-        self.video_indices = data['video_indices']      # (N,)
-        self.start_frames = data['start_frames']        # (N,)
+        self.windows = data['windows']
+        self.video_indices = data['video_indices']
+        self.start_frames = data['start_frames']
         self.window_size = window_size
         self.neg_cross_ratio = neg_cross_ratio
         self.temporal_threshold = temporal_threshold
+        # 使用与 Dataset_create.py 一致的增强参数
         self.transform_params = transform_params or {
-            'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1
+            'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1,
+            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05
         }
         # 建立视频->窗口索引映射
         self.video_window_indices = {}
@@ -167,12 +169,12 @@ class ContrastiveDatasetFromFile(Dataset):
         print(f"加载数据集: {npz_path}, 共 {len(self.windows)} 个窗口")
 
     def _random_transform(self, window):
+        """对窗口 (W,17,2) 进行随机数据增强，与 Dataset_create.py 完全一致"""
         w = window.copy()
         T, V, C = w.shape
         # 旋转
         if 'rotation' in self.transform_params and self.transform_params['rotation'] > 0:
-            angle = random.uniform(-self.transform_params['rotation'],
-                                    self.transform_params['rotation'])
+            angle = random.uniform(-self.transform_params['rotation'], self.transform_params['rotation'])
             rad = math.radians(angle)
             cos, sin = math.cos(rad), math.sin(rad)
             hip_center = w[:, 11:13, :].mean(axis=(0,1))
@@ -183,8 +185,7 @@ class ContrastiveDatasetFromFile(Dataset):
             w = rot + hip_center
         # 缩放
         if 'scale' in self.transform_params and self.transform_params['scale'] > 0:
-            scale = 1.0 + random.uniform(-self.transform_params['scale'],
-                                          self.transform_params['scale'])
+            scale = 1.0 + random.uniform(-self.transform_params['scale'], self.transform_params['scale'])
             w = w * scale
         # 噪声
         if 'noise' in self.transform_params and self.transform_params['noise'] > 0:
@@ -192,13 +193,37 @@ class ContrastiveDatasetFromFile(Dataset):
             w = w + noise
         # 遮挡
         if 'mask' in self.transform_params and self.transform_params['mask'] > 0:
-            mask = np.random.binomial(1, 1-self.transform_params['mask'],
-                                      size=(T, V, 1))
+            mask = np.random.binomial(1, 1-self.transform_params['mask'], size=(T, V, 1))
             w = w * mask
+        # 翻转
+        if 'reverse' in self.transform_params and self.transform_params['reverse'] > 0:
+            if random.random() < self.transform_params['reverse']:
+                w = w[::-1].copy()
+        # 高斯模糊
+        if 'GB' in self.transform_params and self.transform_params['GB'] > 0:
+            if random.random() < self.transform_params['GB']:
+                sigma = random.uniform(0.3, 1.0)
+                radius = int(4 * sigma + 0.5)
+                t = np.arange(-radius, radius+1)
+                kernel = np.exp(-0.5 * (t/sigma)**2)
+                kernel /= kernel.sum()
+                w_smooth = np.zeros_like(w)
+                for v in range(V):
+                    for c in range(C):
+                        w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
+                w = w_smooth
+        # 剪切
+        if 'shear' in self.transform_params and self.transform_params['shear'] > 0:
+            shx = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
+            shy = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
+            x_old = w[..., 0].copy()
+            y_old = w[..., 1].copy()
+            w[..., 0] = x_old + shx * y_old
+            w[..., 1] = y_old + shy * x_old
         return w
 
     def _get_negative_sample(self, anchor_idx, anchor_vi, anchor_start):
-        # 跨视频
+        """获取一个负样本窗口"""
         if random.random() < self.neg_cross_ratio:
             other_videos = [vi for vi in self.video_window_indices if vi != anchor_vi]
             if other_videos:
@@ -207,7 +232,6 @@ class ContrastiveDatasetFromFile(Dataset):
                 if cand:
                     idx, _ = random.choice(cand)
                     return self.windows[idx]
-        # 同视频远距离
         own = self.video_window_indices[anchor_vi]
         far = [(idx, s) for idx, s in own if abs(s - anchor_start) >= self.temporal_threshold]
         if far:
@@ -260,15 +284,14 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     print("训练完成")
 
 if __name__ == '__main__':
-    # 设置数据集路径（请根据实际修改）
+    # 设置数据集路径，请确保该文件已由 Dataset_create.py 生成
     npz_path = 'result/GCN/dataset/dataset.npz'
-    # 创建数据集
     dataset = ContrastiveDatasetFromFile(
         npz_path,
-        window_size=10,          # 需与数据集生成时的值一致
+        window_size=10,
         neg_cross_ratio=0.7,
         temporal_threshold=20,
-        transform_params={'rotation':5, 'scale':0.05, 'noise':0.02, 'mask':0.1}
+        transform_params={'rotation':5, 'scale':0.05, 'noise':0.02, 'mask':0.1,
+                          'reverse':0.2, 'GB':0.3, 'shear':0.05}
     )
-    # 开始训练
-    train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5)
+    train_contrastive(dataset, epochs=100, batch_size=32, lr=0.001, temperature=0.1)

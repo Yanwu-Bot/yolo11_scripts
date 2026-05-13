@@ -13,7 +13,6 @@ from HRNet_model import HighResolutionNet
 import transforms
 from ultralytics import YOLO
 
-# ========== 全局模型变量（只加载一次） ==========
 _device = None
 _hrnet_model = None
 _yolo_model = None
@@ -337,5 +336,5 @@ if __name__ == '__main__':
     vid1 = 'video_origin/data_video/use/run_man.mp4'
     vid2 = 'video_origin/data_video/use/run_woman.mp4'
     model_weights = 'result/GCN/model/best.pth'
-    compare_random_windows(vid1, vid2, model_weights, window_size=8,
+    compare_random_windows(vid1, vid2, model_weights, window_size=10,
                            output_path='result/GCN/comparison_result.png')
