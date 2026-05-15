@@ -10,14 +10,13 @@ from torch.utils.data import Dataset, DataLoader
 
 # ========== ST-GCN 相关定义 ==========
 class COCOGraph:
-    """COCO 17关键点图结构"""
+    # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
         self.num_node = 17
         self.hop_size = hop_size
         self.get_edge()
         self.hop_dis = self.get_hop_distance(self.num_node, self.edge, hop_size=hop_size)
         self.get_adjacency()
-    
     def get_edge(self):
         self_link = [(i, i) for i in range(self.num_node)]
         neighbor_base = [
@@ -25,7 +24,6 @@ class COCOGraph:
             (11,12),(5,11),(6,12),(11,13),(13,15),(12,14),(14,16)
         ]
         self.edge = self_link + neighbor_base
-
     def get_hop_distance(self, num_node, edge, hop_size):
         A = np.zeros((num_node, num_node))
         for i, j in edge:
@@ -37,7 +35,6 @@ class COCOGraph:
         for d in range(hop_size, -1, -1):
             hop_dis[arrive_mat[d]] = d
         return hop_dis
-
     def get_adjacency(self):
         valid_hop = range(0, self.hop_size+1, 1)
         adjacency = np.zeros((self.num_node, self.num_node))
@@ -48,7 +45,6 @@ class COCOGraph:
         for i, hop in enumerate(valid_hop):
             A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop]
         self.A = A
-
     def normalize_digraph(self, A):
         Dl = np.sum(A, 0)
         Dn = np.zeros((A.shape[0], A.shape[0]))
@@ -87,7 +83,6 @@ class STGC_block(nn.Module):
         return self.tgc(self.sgc(x, A * self.M))
 
 class ContrastiveEncoder(nn.Module):
-    """对比学习编码器，输出128维归一化特征向量"""
     def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
@@ -106,7 +101,6 @@ class ContrastiveEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(128, output_dim)
         )
-
     def forward(self, x):
         N, C, T, V = x.size()
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
@@ -141,35 +135,21 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
     return F.cross_entropy(logits, labels)
 
-# ========== 数据集类 (从 .npz 加载，与 Dataset_create.py 增强一致) ==========
+# ========== 数据集类 (从 .npz 加载，与 Dataset_create.py 增强完全一致) ==========
 class ContrastiveDatasetFromFile(Dataset):
-    """从已保存的 .npz 数据集文件加载窗口，动态生成三元组"""
-    def __init__(self, npz_path, window_size=10,
-                 neg_cross_ratio=0.7, temporal_threshold=20,
-                 transform_params=None):
+    def __init__(self, npz_path, window_size=10, transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
-        self.windows = data['windows']
-        self.video_indices = data['video_indices']
-        self.start_frames = data['start_frames']
+        self.windows = data['windows']          # (N, W, 17, 2)
         self.window_size = window_size
-        self.neg_cross_ratio = neg_cross_ratio
-        self.temporal_threshold = temporal_threshold
-        # 使用与 Dataset_create.py 一致的增强参数
+        # 使用与 Dataset_create.py 一致的增强参数（含 flip）
         self.transform_params = transform_params or {
             'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1,
-            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05
+            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2
         }
-        # 建立视频->窗口索引映射
-        self.video_window_indices = {}
-        for idx, vi in enumerate(self.video_indices):
-            vi = int(vi)
-            if vi not in self.video_window_indices:
-                self.video_window_indices[vi] = []
-            self.video_window_indices[vi].append((idx, int(self.start_frames[idx])))
         print(f"加载数据集: {npz_path}, 共 {len(self.windows)} 个窗口")
 
     def _random_transform(self, window):
-        """对窗口 (W,17,2) 进行随机数据增强，与 Dataset_create.py 完全一致"""
+        """与 Dataset_create.py 完全一致（包括修正后的 flip）"""
         w = window.copy()
         T, V, C = w.shape
         # 旋转
@@ -193,9 +173,9 @@ class ContrastiveDatasetFromFile(Dataset):
             w = w + noise
         # 遮挡
         if 'mask' in self.transform_params and self.transform_params['mask'] > 0:
-            mask = np.random.binomial(1, 1-self.transform_params['mask'], size=(T, V, 1))
+            mask = np.random.binomial(1, 1 - self.transform_params['mask'], size=(T, V, 1))
             w = w * mask
-        # 翻转
+        # 时间翻转
         if 'reverse' in self.transform_params and self.transform_params['reverse'] > 0:
             if random.random() < self.transform_params['reverse']:
                 w = w[::-1].copy()
@@ -220,37 +200,28 @@ class ContrastiveDatasetFromFile(Dataset):
             y_old = w[..., 1].copy()
             w[..., 0] = x_old + shx * y_old
             w[..., 1] = y_old + shy * x_old
+        # 左右翻转
+        if 'flip' in self.transform_params and random.random() < self.transform_params['flip']:
+            swap_pairs = [
+                (1,2), (3,4), (5,6), (7,8), (9,10),
+                (11,12), (13,14), (15,16), (0,0)
+            ]
+            w_flipped = w.copy()
+            for a, b in swap_pairs:
+                w_flipped[:, a, :] = -w[:, b, :]
+                w_flipped[:, b, :] = -w[:, a, :]
+            w = w_flipped
         return w
-
-    def _get_negative_sample(self, anchor_idx, anchor_vi, anchor_start):
-        """获取一个负样本窗口"""
-        if random.random() < self.neg_cross_ratio:
-            other_videos = [vi for vi in self.video_window_indices if vi != anchor_vi]
-            if other_videos:
-                neg_vi = random.choice(other_videos)
-                cand = self.video_window_indices[neg_vi]
-                if cand:
-                    idx, _ = random.choice(cand)
-                    return self.windows[idx]
-        own = self.video_window_indices[anchor_vi]
-        far = [(idx, s) for idx, s in own if abs(s - anchor_start) >= self.temporal_threshold]
-        if far:
-            idx, _ = random.choice(far)
-            return self.windows[idx]
-        return np.zeros((self.window_size, 17, 2), dtype=np.float32)
 
     def __len__(self):
         return len(self.windows)
 
     def __getitem__(self, idx):
         anchor = self.windows[idx]
-        anchor_vi = int(self.video_indices[idx])
-        anchor_start = int(self.start_frames[idx])
         positive = self._random_transform(anchor)
-        negative = self._get_negative_sample(idx, anchor_vi, anchor_start)
         def to_stgcn(data):
             return torch.FloatTensor(data).permute(2, 0, 1)
-        return to_stgcn(anchor), to_stgcn(positive), to_stgcn(negative)
+        return to_stgcn(anchor), to_stgcn(positive)
 
 def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -264,7 +235,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for anchor, positive, negative in loader:
+        for anchor, positive in loader:   # 注意：只解包两个张量
             anchor = anchor.to(device)
             positive = positive.to(device)
             z1 = model(anchor)
@@ -284,14 +255,11 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     print("训练完成")
 
 if __name__ == '__main__':
-    # 设置数据集路径，请确保该文件已由 Dataset_create.py 生成
     npz_path = 'result/GCN/dataset/dataset.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
         window_size=10,
-        neg_cross_ratio=0.7,
-        temporal_threshold=20,
         transform_params={'rotation':5, 'scale':0.05, 'noise':0.02, 'mask':0.1,
-                          'reverse':0.2, 'GB':0.3, 'shear':0.05}
+                          'reverse':0.2, 'GB':0.3, 'shear':0.05, 'flip':0.2}
     )
-    train_contrastive(dataset, epochs=100, batch_size=32, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=200, batch_size=32, lr=0.001, temperature=0.1)
