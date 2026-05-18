@@ -110,7 +110,7 @@ def _normalize_keypoints(p_pos, target_torso_length=100):
     hip_center_x = (p_pos[11][0] + p_pos[12][0]) / 2
     hip_center_y = (p_pos[11][1] + p_pos[12][1]) / 2
     torso_length = math.sqrt((shoulder_center_x - hip_center_x)**2 +
-                             (shoulder_center_y - hip_center_y)**2)
+                            (shoulder_center_y - hip_center_y)**2)
     if torso_length < 1e-6:
         return p_pos
     scale = target_torso_length / torso_length
@@ -146,22 +146,17 @@ def _extract_video_keypoints(video_path, normalize=True):
 
 class ContrastiveWindowDataset(torch.utils.data.Dataset):
     """
-    正样本：同一窗口的随机数据增强。
-    返回 (anchor, positive) 二元组，负样本由对比损失在 batch 内部自动获取。
+    仅提取原始骨架窗口并保存为 .npz，不执行任何数据增强。
+    增强由训练时的加载器（如 ContrastiveDatasetFromFile）在线完成。
     """
     def __init__(self,
                 video_source,
                 window_size=10,
                 stride=5,
-                transform_params=None,
                 normalize=True,
                 save_path='result/GCN/dataset/dataset.npz'):
         self.window_size = window_size
         self.stride = stride
-        self.transform_params = transform_params or {
-            'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1,
-            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2
-        }
         self.normalize = normalize
 
         if os.path.isdir(video_source):
@@ -208,80 +203,13 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
                 stride=self.stride)
         print(f"数据集已保存至 {save_path}")
 
-    def _random_transform(self, window):
-        w = window.copy()
-        T, V, C = w.shape
-        # 旋转
-        if 'rotation' in self.transform_params:
-            angle_deg = random.uniform(-self.transform_params['rotation'],
-                                        self.transform_params['rotation'])
-            rad = math.radians(angle_deg)
-            cos = math.cos(rad)
-            sin = math.sin(rad)
-            rot = np.zeros_like(w)
-            rot[..., 0] = w[..., 0] * cos - w[..., 1] * sin
-            rot[..., 1] = w[..., 0] * sin + w[..., 1] * cos
-            w = rot
-        # 缩放
-        if 'scale' in self.transform_params:
-            scale = 1.0 + random.uniform(-self.transform_params['scale'],
-                                        self.transform_params['scale'])
-            w = w * scale 
-        # 高斯噪声
-        if 'noise' in self.transform_params:
-            noise = np.random.normal(0, self.transform_params['noise'], w.shape)
-            w = w + noise
-        # 随机遮挡
-        if 'mask' in self.transform_params:
-            mask = np.random.binomial(1, 1-self.transform_params['mask'], size=(T, V, 1))
-            w = w * mask
-        # 时间翻转
-        if 'reverse' in self.transform_params:
-            if random.random() < self.transform_params['reverse']:
-                w = w[::-1].copy()
-        # 高斯模糊
-        if 'GB' in self.transform_params:
-            if random.random() < self.transform_params['GB']:
-                sigma = random.uniform(0.3, 1)
-                radius = int(4 * sigma + 0.5)
-                t = np.arange(-radius, radius + 1)
-                kernel = np.exp(-0.5 * (t / sigma) ** 2)
-                kernel /= kernel.sum()
-                w_smooth = np.zeros_like(w)
-                for v in range(V):
-                    for c in range(C):
-                        w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
-                w = w_smooth
-        # 剪切
-        if 'shear' in self.transform_params:
-            shx = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
-            shy = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
-            x_old = w[..., 0].copy()
-            y_old = w[..., 1].copy()
-            w[..., 0] = x_old + shx * y_old
-            w[..., 1] = y_old + shy * x_old
-        # 左右翻转
-        if 'flip' in self.transform_params and random.random() < self.transform_params['flip']:
-            swap_pairs = [
-                (1,2), (3,4), (5,6), (7,8), (9,10),
-                (11,12), (13,14), (15,16), (0,0)
-            ]
-            w_flipped = w.copy()
-            for a, b in swap_pairs:
-                w_flipped[:, a, :] = -w[:, b, :]
-                w_flipped[:, b, :] = -w[:, a, :]
-            w = w_flipped
-        return w
-
     def __len__(self):
         return len(self.window_list)
 
     def __getitem__(self, idx):
         _, _, anchor_data = self.window_list[idx]
-        positive = self._random_transform(anchor_data)
-        def to_stgcn(data):
-            return torch.FloatTensor(data).permute(2, 0, 1)
-        return to_stgcn(anchor_data), to_stgcn(positive)
+        # 转换为 (C, T, V) 格式
+        return torch.FloatTensor(anchor_data).permute(2, 0, 1)
 
 if __name__ == '__main__':
     video_folder = 'video_origin/data_video/dataset/'
@@ -289,15 +217,10 @@ if __name__ == '__main__':
         video_source=video_folder,
         window_size=10,
         stride=5,
-        transform_params={'rotation':5, 'scale':0.05, 'noise':0.02, 'mask':0.1,
-                        'reverse':0.2, 'GB':0.3, 'shear':0.05, 'flip':0.2},
         normalize=True,
         save_path='result/GCN/dataset/dataset.npz'
     )
-    from torch.utils.data import DataLoader
-    loader = DataLoader(dataset, batch_size=8, shuffle=True)
-    for anchor, pos in loader:
-        print("Anchor shape:", anchor.shape)
-        print("Positive shape:", pos.shape)
-        print(len(dataset))
-        break
+    # 测试输出形状
+    sample = dataset[0]
+    print("Sample shape:", sample.shape)   # 应为 (2, 10, 17)
+    print(f"数据集总窗口数: {len(dataset)}")

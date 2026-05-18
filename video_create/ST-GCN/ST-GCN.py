@@ -8,7 +8,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-# ========== ST-GCN 相关定义 ==========
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -18,8 +17,8 @@ class COCOGraph:
         self.hop_dis = self.get_hop_distance(self.num_node, self.edge, hop_size=hop_size)
         self.get_adjacency()
     def get_edge(self):
-        self_link = [(i, i) for i in range(self.num_node)]
-        neighbor_base = [
+        self_link = [(i, i) for i in range(self.num_node)] #每个节点自连接
+        neighbor_base = [  #连接关系
             (0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
             (11,12),(5,11),(6,12),(11,13),(13,15),(12,14),(14,16)
         ]
@@ -30,34 +29,35 @@ class COCOGraph:
             A[j, i] = 1
             A[i, j] = 1
         hop_dis = np.zeros((num_node, num_node)) + np.inf
-        transfer_mat = [np.linalg.matrix_power(A, d) for d in range(hop_size+1)]
+        transfer_mat = [np.linalg.matrix_power(A, d) for d in range(hop_size+1)]  #n步到达
         arrive_mat = (np.stack(transfer_mat) > 0)
         for d in range(hop_size, -1, -1):
             hop_dis[arrive_mat[d]] = d
-        return hop_dis
+        return hop_dis  #返回各点间最短到达距离
     def get_adjacency(self):
         valid_hop = range(0, self.hop_size+1, 1)
         adjacency = np.zeros((self.num_node, self.num_node))
         for hop in valid_hop:
-            adjacency[self.hop_dis == hop] = 1
+            adjacency[self.hop_dis == hop] = 1  #得到各个到达距离图
         normalize_adjacency = self.normalize_digraph(adjacency)
         A = np.zeros((len(valid_hop), self.num_node, self.num_node))
         for i, hop in enumerate(valid_hop):
-            A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop]
-        self.A = A
+            A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop] #生成子图
+        self.A = A #（3，17，17）
     def normalize_digraph(self, A):
         Dl = np.sum(A, 0)
         Dn = np.zeros((A.shape[0], A.shape[0]))
         for i in range(A.shape[0]):
             if Dl[i] > 0:
                 Dn[i, i] = Dl[i]**(-1)
-        return np.dot(A, Dn)
+        return np.dot(A, Dn) #按入度归一化
 
-class SpatialGraphConvolution(nn.Module):
+#获取所有跳数的信息，空间卷积
+class SpatialGraphConvolution(nn.Module): 
     def __init__(self, in_channels, out_channels, s_kernel_size):
         super().__init__()
         self.s_kernel_size = s_kernel_size
-        self.conv = nn.Conv2d(in_channels, out_channels * s_kernel_size, 1)
+        self.conv = nn.Conv2d(in_channels, out_channels * s_kernel_size, 1) #输出out_channels * s_kernel_size对应多个子图组
     def forward(self, x, A):
         x = self.conv(x)
         n, kc, t, v = x.size()
@@ -66,11 +66,13 @@ class SpatialGraphConvolution(nn.Module):
         return x.contiguous()
 
 class STGC_block(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.5):
+    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.3):
         super().__init__()
-        self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
-        self.M = nn.Parameter(torch.ones(A_size))
-        self.tgc = nn.Sequential(
+        self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0]) #空间特征聚合
+        self.M = nn.Parameter(torch.ones(A_size)) #可学习权重初始化
+        #时序卷积模块
+        #T-GCN数据结构(B,C,T,V)
+        self.tgc = nn.Sequential( 
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -116,26 +118,30 @@ class ContrastiveEncoder(nn.Module):
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-# ========== 损失函数 (NT-Xent) ==========
+# 损失函数 (NT-Xent)
 def nt_xent_loss(z1, z2, temperature=0.5):
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
     mask = torch.eye(2*batch_size, device=sim.device).bool()
     pos_mask = torch.zeros_like(sim, dtype=torch.bool)
-    for i in range(batch_size):
+    for i in range(batch_size):  #标记正样本位置
         pos_mask[i, i+batch_size] = True
         pos_mask[i+batch_size, i] = True
     sim = sim[~mask].view(2*batch_size, -1)
+    #获取正样本索引，(2B, 1)
     pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
+    #获取负样本索引，(2B, 2B-2)
     neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
     pos_sim = pos_sim / temperature
     neg_sim = neg_sim / temperature
+    #每行第一个为正样本相似度
     logits = torch.cat([pos_sim, neg_sim], dim=1)
+    #标签均为0代表第0个为正样本
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
+    #交叉熵
     return F.cross_entropy(logits, labels)
 
-# ========== 数据集类 (从 .npz 加载，与 Dataset_create.py 增强完全一致) ==========
 class ContrastiveDatasetFromFile(Dataset):
     def __init__(self, npz_path, window_size=10, transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
@@ -260,6 +266,6 @@ if __name__ == '__main__':
         npz_path,
         window_size=10,
         transform_params={'rotation':5, 'scale':0.05, 'noise':0.02, 'mask':0.1,
-                          'reverse':0.2, 'GB':0.3, 'shear':0.05, 'flip':0.2}
+                        'reverse':0.2, 'GB':0.3, 'shear':0.05, 'flip':0.2}
     )
     train_contrastive(dataset, epochs=200, batch_size=32, lr=0.001, temperature=0.1)

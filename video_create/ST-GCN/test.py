@@ -121,7 +121,6 @@ def _normalize_keypoints(p_pos, target_torso_length=100):
         normalized.append([norm_x, norm_y])
     return np.array(normalized, dtype=np.float32)
 
-# ========== ContrastiveEncoder 定义 ==========
 class COCOGraph:
     def __init__(self, hop_size=2):
         self.num_node = 17
