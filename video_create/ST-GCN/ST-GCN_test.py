@@ -1,4 +1,3 @@
-#添加了 EADM 类，实现了能量注意力丢弃（丢弃比例默认30%）
 import os
 import math
 import random
@@ -86,49 +85,6 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M))
 
-class EADM(nn.Module):
-    """Energy-based Attention-guided Drop Module (简化版)"""
-    def __init__(self, drop_ratio=0.3, lambda_=1e-4):
-        super().__init__()
-        self.drop_ratio = drop_ratio  # 丢弃比例
-        self.lambda_ = lambda_
-
-    def forward(self, x):
-        # x: (B, C, T, V)
-        B, C, T, V = x.shape
-        N = T * V
-        # 计算每个通道的均值和方差
-        x_flat = x.view(B, C, N)  # (B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)   # (B, C, 1)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)  # (B, C, 1)
-        # 计算能量 et = 4*(var+λ) / ((t-mu)^2 + 2*var + 2λ)
-        diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)  # (B, C, N) 越小越重要
-        # 重要性 = 1/energy，并经过sigmoid得到注意力图
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))  # (B, C, N)
-        # 将重要性最高的 drop_ratio 比例的特征丢弃
-        k = int(N * self.drop_ratio)
-        if k > 0:
-            # 在每个通道内，找到重要性最高的 k 个位置的索引
-            topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            # 生成丢弃掩码 (保留位置为1，丢弃位置为0)
-            mask = torch.ones_like(importance)
-            # scatter_ 将 mask 中这些索引位置置0
-            mask.scatter_(2, topk_indices, 0.0)
-        else:
-            mask = torch.ones_like(importance)
-        # 应用掩码并重新缩放
-        x_masked = x_flat * mask
-        # 缩放因子：总元素数 / 保留元素数
-        keep_ratio = 1.0 - self.drop_ratio
-        if keep_ratio > 0:
-            x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
-        else:
-            x_masked = x_masked * 0  # 全部丢弃，置零
-        # 恢复原始形状
-        out = x_masked.view(B, C, T, V)
-        return out
-
 class ContrastiveEncoder(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
         super().__init__()
@@ -143,11 +99,10 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # 添加 EADM 模块
-        self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
         self.projection = nn.Sequential(
             nn.Linear(64, 128),
             nn.ReLU(),
+            nn.Dropout(0.2), 
             nn.Linear(128, output_dim)
         )
     def forward(self, x):
@@ -161,7 +116,6 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
-        x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
@@ -185,7 +139,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     # 保存原始相似度（未除以温度）用于统计
     pos_sim_raw = pos_sim.clone()
     neg_sim_raw = neg_sim.clone()
-    
+
     pos_sim = pos_sim / temperature
     neg_sim = neg_sim / temperature
     #每行第一个为正样本相似度
@@ -194,6 +148,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
     #交叉熵
     loss = F.cross_entropy(logits, labels)
+    
     # 计算统计量
     pos_avg = pos_sim_raw.mean().item()
     neg_avg = neg_sim_raw.mean().item()
@@ -286,48 +241,69 @@ class ContrastiveDatasetFromFile(Dataset):
             return torch.FloatTensor(data).permute(2, 0, 1)
         return to_stgcn(anchor), to_stgcn(positive)
 
-def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5):
+def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5, queue_size=256, momentum=0.999):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ContrastiveEncoder(output_dim=128).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+    model_q = ContrastiveEncoder(output_dim=128).to(device)  #在线编码器
+    model_k = ContrastiveEncoder(output_dim=128).to(device)  #动量编码器
+    model_k.load_state_dict(model_q.state_dict())            #初始化时让两个编码器权重一致。
+    for param in model_k.parameters():
+        param.requires_grad = False                          #梯度不变化
+    optimizer = optim.Adam(model_q.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=20, factor=0.5)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    queue = torch.zeros(queue_size, 128).to(device)
+    queue_ptr = 0
     best_loss = float('inf')
     save_dir = 'result/GCN/model'
     os.makedirs(save_dir, exist_ok=True)
 
-    # 记录统计量
     loss_history = []
     pos_history = []
     neg_history = []
     diff_history = []
 
     for epoch in range(epochs):
-        model.train()
+        model_q.train()
         total_loss = 0.0
         total_pos = 0.0
         total_neg = 0.0
         total_diff = 0.0
         num_batches = 0
-        for anchor, positive in loader:   # 注意：只解包两个张量
+        for anchor, positive in loader:
             anchor = anchor.to(device)
             positive = positive.to(device)
-            z1 = model(anchor)
-            z2 = model(positive)
-            loss, pos_avg, neg_avg, diff = nt_xent_loss(z1, z2, temperature)
+            z_q = model_q(anchor)
+            with torch.no_grad():
+                z_k = model_k(positive)
+            pos_sim = (z_q * z_k).sum(dim=1)
+            neg_sim = torch.mm(z_q, queue.T)
+            logits = torch.cat([pos_sim.unsqueeze(1) / temperature, neg_sim / temperature], dim=1)
+            labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+            loss = F.cross_entropy(logits, labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            with torch.no_grad():
+                for param_q, param_k in zip(model_q.parameters(), model_k.parameters()):
+                    param_k.data = momentum * param_k.data + (1 - momentum) * param_q.data
+            batch_size_ = z_k.size(0)
+            if queue_ptr + batch_size_ <= queue_size:
+                queue[queue_ptr:queue_ptr+batch_size_] = z_k
+            else:
+                part1 = queue_size - queue_ptr
+                queue[queue_ptr:] = z_k[:part1]
+                queue[:batch_size_ - part1] = z_k[part1:]
+            queue_ptr = (queue_ptr + batch_size_) % queue_size
             total_loss += loss.item()
-            total_pos += pos_avg
-            total_neg += neg_avg
-            total_diff += diff
+            total_pos += pos_sim.mean().item()
+            total_neg += neg_sim.mean().item()
+            total_diff += (pos_sim.mean().item() - neg_sim.mean().item())
             num_batches += 1
         avg_loss = total_loss / num_batches
         avg_pos = total_pos / num_batches
         avg_neg = total_neg / num_batches
         avg_diff = total_diff / num_batches
-        #scheduler.step(avg_loss)
+        scheduler.step(avg_loss)
         loss_history.append(avg_loss)
         pos_history.append(avg_pos)
         neg_history.append(avg_neg)
@@ -336,11 +312,10 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             f"PosSim: {avg_pos:.4f}, NegSim: {avg_neg:.4f}, Diff: {avg_diff:.4f}")
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), os.path.join(save_dir, 'best.pth'))
+            torch.save(model_q.state_dict(), os.path.join(save_dir, 'best.pth'))
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
 
-    # 绘制子图：左图损失，右图相似度与差值
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     ax1.plot(loss_history, color='black')
     ax1.set_xlabel('Epoch')
@@ -365,7 +340,7 @@ if __name__ == '__main__':
     dataset = ContrastiveDatasetFromFile(
         npz_path,
         window_size=10,
-        transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
+        transform_params={'rotation':10, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
     )
     train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.1)

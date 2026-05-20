@@ -1,4 +1,3 @@
-#添加了 EADM 类，实现了能量注意力丢弃（丢弃比例默认30%）
 import os
 import math
 import random
@@ -86,49 +85,6 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M))
 
-class EADM(nn.Module):
-    """Energy-based Attention-guided Drop Module (简化版)"""
-    def __init__(self, drop_ratio=0.3, lambda_=1e-4):
-        super().__init__()
-        self.drop_ratio = drop_ratio  # 丢弃比例
-        self.lambda_ = lambda_
-
-    def forward(self, x):
-        # x: (B, C, T, V)
-        B, C, T, V = x.shape
-        N = T * V
-        # 计算每个通道的均值和方差
-        x_flat = x.view(B, C, N)  # (B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)   # (B, C, 1)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)  # (B, C, 1)
-        # 计算能量 et = 4*(var+λ) / ((t-mu)^2 + 2*var + 2λ)
-        diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)  # (B, C, N) 越小越重要
-        # 重要性 = 1/energy，并经过sigmoid得到注意力图
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))  # (B, C, N)
-        # 将重要性最高的 drop_ratio 比例的特征丢弃
-        k = int(N * self.drop_ratio)
-        if k > 0:
-            # 在每个通道内，找到重要性最高的 k 个位置的索引
-            topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            # 生成丢弃掩码 (保留位置为1，丢弃位置为0)
-            mask = torch.ones_like(importance)
-            # scatter_ 将 mask 中这些索引位置置0
-            mask.scatter_(2, topk_indices, 0.0)
-        else:
-            mask = torch.ones_like(importance)
-        # 应用掩码并重新缩放
-        x_masked = x_flat * mask
-        # 缩放因子：总元素数 / 保留元素数
-        keep_ratio = 1.0 - self.drop_ratio
-        if keep_ratio > 0:
-            x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
-        else:
-            x_masked = x_masked * 0  # 全部丢弃，置零
-        # 恢复原始形状
-        out = x_masked.view(B, C, T, V)
-        return out
-
 class ContrastiveEncoder(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
         super().__init__()
@@ -143,8 +99,6 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # 添加 EADM 模块
-        self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
         self.projection = nn.Sequential(
             nn.Linear(64, 128),
             nn.ReLU(),
@@ -161,7 +115,6 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
-        x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
@@ -194,6 +147,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
     #交叉熵
     loss = F.cross_entropy(logits, labels)
+    
     # 计算统计量
     pos_avg = pos_sim_raw.mean().item()
     neg_avg = neg_sim_raw.mean().item()
@@ -368,4 +322,4 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
     )
-    train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.07)

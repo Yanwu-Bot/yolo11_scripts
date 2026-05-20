@@ -331,7 +331,7 @@ def compare_random_windows(video1_path, video2_path, model_path, window_size=8,
     print(f"Visualization saved to {output_path}")
 
 if __name__ == '__main__':
-    vid1 = 'video_origin/data_video/use/run_man_r.mp4'
+    vid1 = 'video_origin/data_video/use/run_man.mp4'
     vid2 = 'video_origin/data_video/use/run_woman.mp4'
     model_weights = 'result/GCN/model/best.pth'
     compare_random_windows(vid1, vid2, model_weights, window_size=10,
