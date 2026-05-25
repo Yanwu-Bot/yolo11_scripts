@@ -244,7 +244,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ContrastiveEncoder(output_dim=128).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     best_loss = float('inf')
     save_dir = 'result/GCN/model'
@@ -281,7 +281,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         avg_pos = total_pos / num_batches
         avg_neg = total_neg / num_batches
         avg_diff = total_diff / num_batches
-        #scheduler.step(avg_loss)
+        scheduler.step(avg_loss)
         loss_history.append(avg_loss)
         pos_history.append(avg_pos)
         neg_history.append(avg_neg)
@@ -322,4 +322,4 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
     )
-    train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.07)
+    train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.1)

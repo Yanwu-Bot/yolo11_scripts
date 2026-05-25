@@ -8,8 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-import matplotlib.pyplot as plt  # 新增：用于绘图
-
+import matplotlib.pyplot as plt  
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -79,7 +78,7 @@ class STGC_block(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Conv2d(out_channels, out_channels, (t_kernel_size,1), (stride,1),
-                      ((t_kernel_size-1)//2, 0)),
+                    ((t_kernel_size-1)//2, 0)),
             nn.BatchNorm2d(out_channels),
             nn.ReLU()
         )
@@ -146,9 +145,9 @@ class ContrastiveEncoder(nn.Module):
         # 添加 EADM 模块
         self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
         self.projection = nn.Sequential(
-            nn.Linear(64, 128),
+            nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(128, output_dim)
+            nn.Linear(64, output_dim)
         )
     def forward(self, x):
         N, C, T, V = x.size()
@@ -181,11 +180,9 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
     #获取负样本索引，(2B, 2B-2)
     neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
-    
     # 保存原始相似度（未除以温度）用于统计
     pos_sim_raw = pos_sim.clone()
     neg_sim_raw = neg_sim.clone()
-    
     pos_sim = pos_sim / temperature
     neg_sim = neg_sim / temperature
     #每行第一个为正样本相似度
@@ -290,7 +287,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ContrastiveEncoder(output_dim=128).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.7) #当五个epoch损失值没有下降即学习率乘以factor
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     best_loss = float('inf')
     save_dir = 'result/GCN/model'
@@ -327,7 +324,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         avg_pos = total_pos / num_batches
         avg_neg = total_neg / num_batches
         avg_diff = total_diff / num_batches
-        #scheduler.step(avg_loss)
+        scheduler.step(avg_loss)
         loss_history.append(avg_loss)
         pos_history.append(avg_pos)
         neg_history.append(avg_neg)
@@ -340,7 +337,6 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
 
-    # 绘制子图：左图损失，右图相似度与差值
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     ax1.plot(loss_history, color='black')
     ax1.set_xlabel('Epoch')
@@ -364,7 +360,7 @@ if __name__ == '__main__':
     npz_path = 'result/GCN/dataset/dataset.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
-        window_size=10,
+        window_size=6,
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
     )
