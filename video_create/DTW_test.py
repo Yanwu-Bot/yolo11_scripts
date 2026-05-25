@@ -199,7 +199,7 @@ class VideoScoreEvaluator:
 
         self.kps1 = []
         self.kps2 = []
-        self.window_sim_scores = None  # 新增：保存每个窗口的ST-GCN相似度得分
+        self.window_sim_scores = None  # 保存每个窗口的ST-GCN相似度得分
 
     def set_videos(self, template_video: str, test_video: str):
         self.template_video = template_video
@@ -347,10 +347,8 @@ class VideoScoreEvaluator:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = ContrastiveEncoder(output_dim=128).to(device)
             model.load_state_dict(torch.load('result/GCN/model/best.pth', map_location=device))
-            scores = compare_videos(self.kps1, self.kps2, path, model, device, self.window)
-            self.window_sim_scores = scores  # 记录窗口相似度得分
-            print("ST-GCN 窗口相似度得分:", scores)
-            print("-"*60)
+            scores = compare_videos(self.kps1, self.kps2, model, device, self.window)
+            self.window_sim_scores = scores # 记录窗口相似度得分
             L = len(path)
             window_fea_scores = []
             window_point_scores = []
@@ -385,21 +383,20 @@ class VideoScoreEvaluator:
         scores = []
         if len(fea) == len(point) == len(vec):
             length = len(fea)
-            print(length)
             for i in range(length):
                 score = self.weight['fea'] * fea[i] + \
                         self.weight['point'] * point[i] + \
                         self.weight['displacement'] * vec[i]
                 scores.append(score)
-            self.mu = sum(scores) / length
+            scores = np.array(scores)
+            self.window_sim_scores = np.array(self.window_sim_scores)/100 #缩放
+            scores = scores * self.window_sim_scores
+            self.mu = scores.sum() / self.window_sim_scores.sum()
 
-            total = 0
-            for i in range(length):
-                x = (scores[i] - self.mu) ** 2
-                total += x
+            diff = scores - self.mu
+            total = np.sum(diff ** 2)
             self.sigma = math.sqrt(total / (length - 1)) if length > 1 else 0.0
             self.sigma = self.sigma / math.sqrt(length)
-
             self.lower_bound = max(0, self.mu - 1.96 * self.sigma)
             self.upper_bound = min(100, self.mu + 1.96 * self.sigma)
         else:
@@ -462,7 +459,7 @@ class VideoScoreEvaluator:
             return 0.0
         combined_score = (self.feat_score * self.weight['fea'] + 
                          self.point_score * self.weight['point'] +
-                         self.displacement_score * self.weight['vec'])
+                         self.displacement_score * self.weight['displacement'])
         return combined_score
     
     def print_summary(self):
@@ -485,13 +482,14 @@ class VideoScoreEvaluator:
         print(f"得分区间: {self.lower_bound:.2f} --- {self.upper_bound:.2f}")
         print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}, displacement={self.weight['displacement']}")
         print(f"{'='*60}")
+        print(self.window_sim_scores)
 
-# ==================== 全局辅助函数 ====================
-def compare_videos(kps1, kps2, path, model, device, window_size):
+#  窗口相似度对比
+def compare_videos(kps1, kps2, model, device, window_size):
     model.eval()
     arr1 = np.array(kps1, dtype=np.float32)  # (L, 17, 2)
     arr2 = np.array(kps2, dtype=np.float32)  # (L, 17, 2)
-    L = len(arr1)  # 与 len(path) 等价
+    L = len(arr1)  
     scores = []
 
     for start in range(0, L, window_size):
@@ -515,12 +513,8 @@ def compare_videos(kps1, kps2, path, model, device, window_size):
         scores.append(score)
     return scores
 
-# ==================== 新增：窗口可视化函数 ====================
+# 窗口可视化函数
 def visualize_window(evaluator, window_idx):
-    """
-    可视化第 window_idx 个窗口的10帧对比图像（模板和测试），并显示ST-GCN相似度得分。
-    前提：evaluator 已经运行了 score_video() 并且有 path 和 window_sim_scores。
-    """
     if evaluator.window_sim_scores is None or window_idx >= len(evaluator.window_sim_scores):
         print(f"窗口索引 {window_idx} 超出范围 (共 {len(evaluator.window_sim_scores) if evaluator.window_sim_scores else 0} 个窗口)")
         return
@@ -542,8 +536,8 @@ def visualize_window(evaluator, window_idx):
     fig, axes = plt.subplots(2, n_frames, figsize=(3*n_frames, 6))
     if n_frames == 1:
         axes = axes.reshape(2, 1)
-    fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f}%)',
-                 fontsize=14)
+    fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',
+                    fontsize=14)
 
     for i in range(n_frames):
         t_idx = int(window_path[i, 1])   # 模板帧索引
@@ -576,7 +570,6 @@ def visualize_window(evaluator, window_idx):
     cap_t.release()
     cap_test.release()
 
-# ==================== 主程序 ====================
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_man.mp4',
@@ -587,13 +580,9 @@ if __name__ == '__main__':
         output_dir='result/plots'
     )
     evaluator.score_video()
-    
-    # 原有的单帧可视化（可选）
     VIEW_FRAME = 20
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
-    
-    # 新增：可视化第0个窗口（可修改窗口索引）
-    visualize_window(evaluator, window_idx=13)
-    
+    # 可视化第i个窗口
+    visualize_window(evaluator, window_idx=1)
     evaluator.print_summary()
