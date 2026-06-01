@@ -1,4 +1,4 @@
-#添加了 EADM 类，实现了能量注意力丢弃（丢弃比例默认30%）
+#先改MODEL_SAVE_N 保存模型名字，再改窗口大小，batch大小，学习率，温度，各种数据增强参数
 import os
 import math
 import random
@@ -9,6 +9,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
+
+MODEL_SAVE_N = 'best_6_3.pth'
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -145,9 +147,9 @@ class ContrastiveEncoder(nn.Module):
         # 添加 EADM 模块
         self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
         self.projection = nn.Sequential(
-            nn.Linear(64, 64),
+            nn.Linear(64, 128),
             nn.ReLU(),
-            nn.Linear(64, output_dim)
+            nn.Linear(128, output_dim)
         )
     def forward(self, x):
         N, C, T, V = x.size()
@@ -198,14 +200,14 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     return loss, pos_avg, neg_avg, diff
 
 class ContrastiveDatasetFromFile(Dataset):
-    def __init__(self, npz_path, window_size=10, transform_params=None):
+    def __init__(self, npz_path, window_size=6, transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
         self.windows = data['windows']          # (N, W, 17, 2)
         self.window_size = window_size
         # 使用与 Dataset_create.py 一致的增强参数（含 flip）
         self.transform_params = transform_params or {
             'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1,
-            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2
+            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2 ,'delete':0.1
         }
         print(f"加载数据集: {npz_path}, 共 {len(self.windows)} 个窗口")
 
@@ -244,14 +246,24 @@ class ContrastiveDatasetFromFile(Dataset):
             if random.random() < self.transform_params['GB']:
                 sigma = random.uniform(0.3, 1.0)
                 radius = int(4 * sigma + 0.5)
-                t = np.arange(-radius, radius+1)
-                kernel = np.exp(-0.5 * (t/sigma)**2)
-                kernel /= kernel.sum()
-                w_smooth = np.zeros_like(w)
-                for v in range(V):
-                    for c in range(C):
-                        w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
-                w = w_smooth
+                # 确保核长度不超过时间帧数 T
+                max_radius = (T - 1) // 2
+                if radius > max_radius:
+                    radius = max_radius
+                    if radius <= 0:
+                        # 无法进行卷积，跳过
+                        pass
+                    else:
+                        sigma = radius / 4.0  # 近似校准
+                if radius > 0:
+                    t = np.arange(-radius, radius + 1)
+                    kernel = np.exp(-0.5 * (t / sigma) ** 2)
+                    kernel /= kernel.sum()
+                    w_smooth = np.zeros_like(w)
+                    for v in range(V):
+                        for c in range(C):
+                            w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
+                    w = w_smooth
         # 剪切
         if 'shear' in self.transform_params and self.transform_params['shear'] > 0:
             shx = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
@@ -271,6 +283,11 @@ class ContrastiveDatasetFromFile(Dataset):
                 w_flipped[:, a, :] = -w[:, b, :]
                 w_flipped[:, b, :] = -w[:, a, :]
             w = w_flipped
+        if 'delete' in self.transform_params and random.random() < self.transform_params['delete']:
+            drop_ratio = random.uniform(0.05, 0.2)  # 丢弃5%~20%的帧
+            num_drop = max(1, int(T * drop_ratio))   # 至少丢弃一帧
+            drop_indices = random.sample(range(T), num_drop)
+            w[drop_indices, :, :] = 0.0
         return w
 
     def __len__(self):
@@ -333,7 +350,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             f"PosSim: {avg_pos:.4f}, NegSim: {avg_neg:.4f}, Diff: {avg_diff:.4f}")
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), os.path.join(save_dir, 'best.pth'))
+            torch.save(model.state_dict(), os.path.join(save_dir, MODEL_SAVE_N ))
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
 
@@ -362,6 +379,6 @@ if __name__ == '__main__':
         npz_path,
         window_size=6,
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
-                        'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
+                        'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
     )
-    train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=300, batch_size=128, lr=0.001, temperature=0.1)

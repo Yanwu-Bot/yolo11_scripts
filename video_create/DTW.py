@@ -120,10 +120,10 @@ class VideoScoreEvaluator:
         # 计算欧氏距离
         dist = np.linalg.norm(test_points - template_points)
         # 将距离转换为得分
-        if dist <= 50.0:
+        if dist <= 100.0:
             score = 100 
-        elif 50 < dist < 150:
-            score = (1 - ((dist-50) / 100)) * 100
+        elif 100 < dist < 150:
+            score = (1 - ((dist-100) / 100)) * 100
         else:
             score = 0.0
         return score, dist   
@@ -312,7 +312,7 @@ class VideoScoreEvaluator:
             ax2.plot(x2, self.point_distances, 'r-', linewidth=2, label='关键点距离', alpha=0.8)
             mean_dist = np.mean(self.point_distances)
             ax2.axhline(y=mean_dist, color='g', linestyle='--', linewidth=2, label=f'均值: {mean_dist:.3f}')
-            ax2.axhline(y=3.0, color='orange', linestyle=':', linewidth=1.5, label='参考阈值: 3.0')
+            ax2.axhline(y=80.0, color='orange', linestyle=':', linewidth=1.5, label='参考阈值: 3.0')
             ax2.set_title('2. 关键点距离随时间变化图', fontsize=14, fontweight='bold')
             
             # 添加统计信息
@@ -470,11 +470,11 @@ class VideoScoreEvaluator:
 if __name__ == '__main__':
     # 创建评分器实例
     evaluator = VideoScoreEvaluator(
-        template_video='run_man.mp4',
-        test_video='run_woman.mp4',
+        template_video='run_7.mp4',
+        test_video='run_10.mp4',
         features_dir='result/features',
-        video_dir='video_origin/data_video/use',
-        weight={"fea": 0.5, "point": 0.3, "displacement": 0.2},
+        video_dir='D:/Dataset/sprint/Whole',
+        weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     # 运行评分
@@ -482,7 +482,7 @@ if __name__ == '__main__':
     # 生成综合分析图（2x2布局）
     evaluator.plot_all_analysis(t=0.05, save_path=None)
     # 可视化指定对齐帧（可选）
-    VIEW_FRAME = 20
+    VIEW_FRAME = 232
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 打印摘要

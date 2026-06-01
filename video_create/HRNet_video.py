@@ -17,7 +17,7 @@ from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 24
-    YOLO_CONF_THRESHOLD = 0.5
+    YOLO_CONF_THRESHOLD = 0.6
     NORMALIZE_TORSO_LENGTH = 100
     STEP_MIN_GAP = 0.2
     OUTPUT_VIDEO_SIZE = (1280, 720)
@@ -61,7 +61,7 @@ class VideoProcessor:
             return True
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         try:
-            self.yolo_model = YOLO('weights/yolo11n.pt')
+            self.yolo_model = YOLO('weights/yolo11m.pt')
             self.hrnet_model = HighResolutionNet(base_channel=32)
             weights_path = "HRnet/pytorch/pose_coco/pose_hrnet_w32_256x192.pth"
             keypoint_json_path = "HRnet/person_keypoints.json"
@@ -90,6 +90,9 @@ class VideoProcessor:
             return None, 0
         results = self.yolo_model(frame, verbose=False)
         persons = []
+        img_area = frame.shape[0] * frame.shape[1]  # 图像总像素数
+        min_area = img_area * 0.003  # 最小面积阈值（图像面积的0.3%，可根据需要调整）
+
         for result in results:
             boxes = result.boxes
             if boxes is None:
@@ -99,13 +102,21 @@ class VideoProcessor:
                 conf = float(box.conf[0])
                 if cls_id != 0 or conf < self.YOLO_CONF_THRESHOLD:
                     continue
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy() #ROI对角坐标
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 area = (x2 - x1) * (y2 - y1)
-                persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area))
+
+                # 面积过滤：小于最小面积的直接跳过
+                if area < min_area:
+                    continue
+
+                # 综合评分：置信度 × 面积（可根据需要调整权重）
+                score = conf * area
+                persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area, score))
         if not persons:
             return None, 0
-        persons.sort(key=lambda x: x[2], reverse=True) #按面积从大到小排序
-        return persons[0][0], persons[0][1] #返回面积最大的坐标，置信度
+        # 按综合评分降序排序，选择评分最高的
+        persons.sort(key=lambda x: x[3], reverse=True)  # x[3] 是 score
+        return persons[0][0], persons[0][1]  # 返回 (bbox, conf)
 
     def normalize_keypoints(self, p_pos):
         if len(p_pos) < 17:
@@ -185,7 +196,7 @@ class VideoProcessor:
         return [keypoints_list], scores
 
     def process_frame(self, frame, preview=True, normalize_for_storage=True):
-        """处理单帧：只预测关键点、归一化、绘制、裁剪输出，不计算特征"""
+        """处理单帧：只预测关键点、归一化、绘制、输出完整帧，不计算特征"""
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
         try:
             list_p, _ = self.predict_frame(frame)
@@ -205,19 +216,19 @@ class VideoProcessor:
                     p_pos = []
 
             if not p_pos or len(p_pos) < 17:
-                # 无人帧：输出黑色帧，保存空数据
-                output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+                # 无人帧：显示当前帧图像（resize 到输出尺寸），并暂停片刻
+                output_frame = cv2.resize(frame, (out_w, out_h))
                 if preview:
                     cv2.setWindowTitle('YOLO Detection', "No person")
                     cv2.imshow('YOLO Detection', output_frame)
-                    cv2.waitKey(1)
+                    cv2.waitKey(500)  # 暂停 500ms，可调整
                 self.all_points.append([])
                 self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
                 self.all_scale_info.append(None)
-                return output_frame, [], None, None, None   # feature_frame = None
+                return output_frame, [], None, None, None
 
             norm_data = None
-            scale_info = None #字典存储缩放数据
+            scale_info = None
             if normalize_for_storage:
                 norm_data, scale, torso_len, center = self.normalize_keypoints(p_pos)
                 if norm_data is not None:
@@ -226,36 +237,13 @@ class VideoProcessor:
                     norm_data = None
 
             self.trajectory_tracker.update(p_pos)
-            #绘制关键点及连线
+            # 绘制关键点及连线（直接在frame上绘制）
             draw_points = [[p[0], p[1], 1.0] for p in p_pos]
             draw = Draw(frame, [draw_points])
             draw.draw_select()
 
-            if self.last_roi is not None:
-                rx1, ry1, rx2, ry2 = self.last_roi
-                if rx2 > rx1 and ry2 > ry1:
-                    crop = frame[ry1:ry2, rx1:rx2].copy()
-                    h_crop, w_crop = crop.shape[:2]
-                    target_ratio = out_w / out_h
-                    crop_ratio = w_crop / h_crop
-                    if crop_ratio > target_ratio:
-                        new_w = out_w
-                        new_h = int(out_w / crop_ratio)
-                        resized = cv2.resize(crop, (new_w, new_h))
-                        top = (out_h - new_h) // 2
-                        bottom = out_h - new_h - top
-                        output_frame = cv2.copyMakeBorder(resized, top, bottom, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
-                    else:
-                        new_h = out_h
-                        new_w = int(out_h * crop_ratio)
-                        resized = cv2.resize(crop, (new_w, new_h))
-                        left = (out_w - new_w) // 2
-                        right = out_w - new_w - left
-                        output_frame = cv2.copyMakeBorder(resized, 0, 0, left, right, cv2.BORDER_CONSTANT, value=(0,0,0))
-                else:
-                    output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-            else:
-                output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+            # 将完整的绘制后帧 resize 到输出尺寸
+            output_frame = cv2.resize(frame, (out_w, out_h))
 
             if preview:
                 cv2.setWindowTitle('YOLO Detection', "Processing")
@@ -435,7 +423,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'video_origin/data_video/use/run_woman.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_9.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

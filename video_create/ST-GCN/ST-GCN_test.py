@@ -229,6 +229,11 @@ class ContrastiveDatasetFromFile(Dataset):
                 w_flipped[:, a, :] = -w[:, b, :]
                 w_flipped[:, b, :] = -w[:, a, :]
             w = w_flipped
+        if 'delete' in self.transform_params and random.random() < self.transform_params['delete']:
+            drop_ratio = random.uniform(0.05, 0.2)  # 丢弃5%~20%的帧
+            num_drop = max(1, int(T * drop_ratio))   # 至少丢弃一帧
+            drop_indices = random.sample(range(T), num_drop)
+            w[drop_indices, :, :] = 0.0
         return w
 
     def __len__(self):
@@ -341,6 +346,6 @@ if __name__ == '__main__':
         npz_path,
         window_size=10,
         transform_params={'rotation':10, 'scale':0.2, 'noise':0.05, 'mask':0.2,
-                        'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3}
+                        'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
     )
     train_contrastive(dataset, epochs=300, batch_size=64, lr=0.001, temperature=0.1)

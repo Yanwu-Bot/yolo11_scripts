@@ -215,7 +215,7 @@ if __name__ == '__main__':
     video_folder = 'video_origin/data_video/dataset/'
     dataset = ContrastiveWindowDataset(
         video_source=video_folder,
-        window_size=10,
+        window_size=6,
         stride=3,
         normalize=True,
         save_path='result/GCN/dataset/dataset.npz'

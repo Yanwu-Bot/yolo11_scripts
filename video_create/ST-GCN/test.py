@@ -20,6 +20,49 @@ _person_info = None
 _hrnet_transform = None
 _models_initialized = False
 
+class EADM(nn.Module):
+    """Energy-based Attention-guided Drop Module (简化版)"""
+    def __init__(self, drop_ratio=0.3, lambda_=1e-4):
+        super().__init__()
+        self.drop_ratio = drop_ratio  # 丢弃比例
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        # x: (B, C, T, V)
+        B, C, T, V = x.shape
+        N = T * V
+        # 计算每个通道的均值和方差
+        x_flat = x.view(B, C, N)  # (B, C, N)
+        mu = x_flat.mean(dim=2, keepdim=True)   # (B, C, 1)
+        var = x_flat.var(dim=2, keepdim=True, unbiased=False)  # (B, C, 1)
+        # 计算能量 et = 4*(var+λ) / ((t-mu)^2 + 2*var + 2λ)
+        diff = x_flat - mu
+        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)  # (B, C, N) 越小越重要
+        # 重要性 = 1/energy，并经过sigmoid得到注意力图
+        importance = torch.sigmoid(1.0 / (energy + 1e-10))  # (B, C, N)
+        # 将重要性最高的 drop_ratio 比例的特征丢弃
+        k = int(N * self.drop_ratio)
+        if k > 0:
+            # 在每个通道内，找到重要性最高的 k 个位置的索引
+            topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
+            # 生成丢弃掩码 (保留位置为1，丢弃位置为0)
+            mask = torch.ones_like(importance)
+            # scatter_ 将 mask 中这些索引位置置0
+            mask.scatter_(2, topk_indices, 0.0)
+        else:
+            mask = torch.ones_like(importance)
+        # 应用掩码并重新缩放
+        x_masked = x_flat * mask
+        # 缩放因子：总元素数 / 保留元素数
+        keep_ratio = 1.0 - self.drop_ratio
+        if keep_ratio > 0:
+            x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
+        else:
+            x_masked = x_masked * 0  # 全部丢弃，置零
+        # 恢复原始形状
+        out = x_masked.view(B, C, T, V)
+        return out
+
 def _init_models():
     global _device, _hrnet_model, _yolo_model, _person_info, _hrnet_transform, _models_initialized
     if _models_initialized:
@@ -193,14 +236,20 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        self.bn = nn.BatchNorm1d(in_channels*graph.num_node)
+        self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc3 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        self.projection = nn.Sequential(nn.Linear(64,128), nn.ReLU(), nn.Linear(128, output_dim))
+        # 添加 EADM 模块
+        self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
+        self.projection = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim)
+        )
     def forward(self, x):
         N, C, T, V = x.size()
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
@@ -212,46 +261,128 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
+        x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-def compare_windows(kps1, kps2, model, device):
+def compare_random_windows(video1_path, video2_path, model_path, window_size=8,
+                           max_retry=10, output_path='comparison.png'):
     """
-    计算两个窗口关键点序列的特征相似度。
-    Args:
-        kps1: np.ndarray 形状 (W, 17, 2) 或 list of (17,2)
-        kps2: 同上
-        model: 已加载的 ContrastiveEncoder 模型（已置于 eval 模式）
-        device: torch.device
-    Returns:
-        sim_cosine: 余弦相似度（float）
-        score_percent: 映射到 0~100 的百分比得分（float）
+    从两个视频中随机选取窗口，仅提取窗口内的帧，计算相似度并可视化。
     """
-    import numpy as np
-    import torch
+    _init_models()
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ContrastiveEncoder(output_dim=128).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    # 确保为 numpy 数组
-    arr1 = np.array(kps1, dtype=np.float32)  # (W,17,2)
-    arr2 = np.array(kps2, dtype=np.float32)
 
-    def get_feature(arr):
-        # (W,17,2) -> (1,2,W,17)
-        tensor = torch.FloatTensor(arr).permute(2, 0, 1).unsqueeze(0).to(device)
-        with torch.no_grad():
-            feat = model(tensor)
-        return feat.cpu().numpy()[0]  # (128,)
+    def get_valid_frame(video_path, frame_indices):
+        """从视频中读取指定帧索引，返回该帧图像和归一化关键点，若某帧检测失败则跳过。"""
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        keypoints = []
+        for idx in sorted(frame_indices):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            kp = _extract_single_frame_keypoints(frame)
+            if kp is not None and len(kp) == 17:
+                kp_norm = _normalize_keypoints(kp)
+                frames.append(frame)
+                keypoints.append(kp_norm)
+        cap.release()
+        return frames, keypoints
 
-    feat1 = get_feature(arr1)
-    feat2 = get_feature(arr2)
-    sim_cosine = np.dot(feat1, feat2)  # L2归一化后点积即余弦相似度
-    score_percent = (sim_cosine + 1) / 2 * 100
-    return sim_cosine, score_percent
+    # 尝试多次随机起始位置直到获取足够帧数
+    cap1 = cv2.VideoCapture(video1_path)
+    cap2 = cv2.VideoCapture(video2_path)
+    total_frames1 = int(cap1.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames2 = int(cap2.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap1.release()
+    cap2.release()
+
+    best_sim = -1
+    best_frames1 = None
+    best_frames2 = None
+    best_kps1 = None
+    best_kps2 = None
+
+    for attempt in range(max_retry):
+        start1 = random.randint(0, max(0, total_frames1 - window_size))
+        start2 = random.randint(0, max(0, total_frames2 - window_size))
+        indices1 = list(range(start1, min(start1 + window_size, total_frames1)))
+        indices2 = list(range(start2, min(start2 + window_size, total_frames2)))
+
+        frames1, kps1 = get_valid_frame(video1_path, indices1)
+        frames2, kps2 = get_valid_frame(video2_path, indices2)
+
+        if len(kps1) < window_size or len(kps2) < window_size:
+            continue  # 窗口内检测失败过多，重试
+
+        # 提取特征
+        def get_feature(kps_list):
+            # kps_list: list of (17,2) -> (1,2,W,17)
+            arr = np.array(kps_list, dtype=np.float32)  # (W,17,2)
+            tensor = torch.FloatTensor(arr).permute(2,0,1).unsqueeze(0).to(device)
+            with torch.no_grad():
+                feat = model(tensor)
+            return feat.cpu().numpy()[0]
+
+        feat1 = get_feature(kps1)
+        feat2 = get_feature(kps2)
+        sim = np.dot(feat1, feat2)
+        # 更新最佳结果（最相似的窗口）
+        if sim > best_sim:
+            best_sim = sim
+            best_frames1 = frames1
+            best_frames2 = frames2
+            best_kps1 = kps1
+            best_kps2 = kps2
+
+    if best_frames1 is None or best_frames2 is None:
+        print("Failed to extract valid windows after retries.")
+        return
+
+    # 计算百分比得分
+    score_percent = (best_sim + 1) / 2 * 100   # 映射到0~100
+    print(f"Cosine similarity: {best_sim:.4f} -> Score: {score_percent:.2f}%")
+
+    # ===== 可视化 =====
+    window_size_actual = min(len(best_frames1), len(best_frames2), window_size)
+    # 调整到相同帧数（取多者的前若干帧）
+    best_frames1 = best_frames1[:window_size_actual]
+    best_frames2 = best_frames2[:window_size_actual]
+
+    thumb_height = 120
+    def resize_frame(frame, height):
+        h, w = frame.shape[:2]
+        ratio = height / h
+        new_w = int(w * ratio)
+        return cv2.resize(frame, (new_w, height))
+
+    thumbs1 = [resize_frame(f, thumb_height) for f in best_frames1]
+    thumbs2 = [resize_frame(f, thumb_height) for f in best_frames2]
+
+    concat1 = np.hstack(thumbs1)
+    concat2 = np.hstack(thumbs2)
+    concat = np.vstack([concat1, concat2])
+
+    plt.figure(figsize=(12, 4 + 2))
+    concat_rgb = cv2.cvtColor(concat, cv2.COLOR_BGR2RGB)
+    plt.imshow(concat_rgb)
+    plt.title(f"Video 1 (top) vs Video 2 (bottom)\nSimilarity Score: {score_percent:.2f}%", fontsize=14)
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.show()
+    print(f"Visualization saved to {output_path}")
 
 if __name__ == '__main__':
     vid1 = 'video_origin/data_video/use/run_man.mp4'
     vid2 = 'video_origin/data_video/use/run_woman.mp4'
     model_weights = 'result/GCN/model/best.pth'
     compare_random_windows(vid1, vid2, model_weights, window_size=10,
-                            output_path='result/GCN/comparison_result.png')
+                           output_path='result/GCN/comparison_result.png')

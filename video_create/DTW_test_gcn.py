@@ -515,10 +515,10 @@ class VideoScoreEvaluator:
 
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
-        template_video='run_man.mp4',
-        test_video='run_woman.mp4',
+        template_video='run_7.mp4',
+        test_video='run_10.mp4',
         features_dir='result/features',
-        video_dir='video_origin/data_video/use',
+        video_dir='D:/Dataset/sprint/Whole',
         weight={"gcn": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )

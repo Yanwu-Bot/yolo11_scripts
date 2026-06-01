@@ -13,6 +13,8 @@ import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 
+WINDOWSIZE = 6 #窗口大小
+
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
@@ -128,15 +130,20 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        self.bn = nn.BatchNorm1d(in_channels*graph.num_node)
+        self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc3 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
+        # 添加 EADM 模块
         self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
-        self.projection = nn.Sequential(nn.Linear(64,64), nn.ReLU(), nn.Linear(64, output_dim))
+        self.projection = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim)
+        )
     def forward(self, x):
         N, C, T, V = x.size()
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
@@ -148,11 +155,12 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
+        x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-# ==================== VideoScoreEvaluator 类（核心评分逻辑） ====================
+#评分类
 class VideoScoreEvaluator:
     def __init__(self, 
                 template_video: str = None,
@@ -193,7 +201,7 @@ class VideoScoreEvaluator:
         if template_video and test_video:
             self.set_videos(template_video, test_video)
 
-        self.window = 10
+        self.window = WINDOWSIZE
         self.mu =None
         self.sigma = None
 
@@ -233,15 +241,19 @@ class VideoScoreEvaluator:
             mu = 100 * np.exp(-k * exceed)
         return mu
 
-    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray) -> tuple:
-        dist = np.linalg.norm(test_points - template_points)
-        if dist <= 50.0:
-            score = 100 
-        elif 50 < dist < 150:
-            score = (1 - ((dist-50) / 100)) * 100
+    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=100) -> tuple:
+        # 排除面部关键点（索引0-4），仅使用躯干和四肢（5-16）
+        body_indices = list(range(5, 17))  # 14个关键点
+        test_body = test_points[body_indices]
+        template_body = template_points[body_indices]
+        dist = np.linalg.norm(test_body - template_body)
+        if dist <= threshold:
+            score = 100
+        elif threshold < dist < threshold + 50:
+            score = (1 - ((dist - threshold) / 50)) * 100
         else:
             score = 0.0
-        return score, dist   
+        return score, dist
 
     def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 4) -> float:
         q = np.abs(test_vec - template_vec)
@@ -346,7 +358,7 @@ class VideoScoreEvaluator:
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = ContrastiveEncoder(output_dim=128).to(device)
-            model.load_state_dict(torch.load('result/GCN/model/best.pth', map_location=device))
+            model.load_state_dict(torch.load('result/GCN/model/best_6_3.pth', map_location=device))
             scores = compare_videos(self.kps1, self.kps2, model, device, self.window)
             self.window_sim_scores = scores # 记录窗口相似度得分
             L = len(path)
@@ -572,17 +584,17 @@ def visualize_window(evaluator, window_idx):
 
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
-        template_video='run_man.mp4',
-        test_video='run_woman.mp4',
+        template_video='run_7.mp4',
+        test_video='run_9.mp4',
         features_dir='result/features',
-        video_dir='video_origin/data_video/use',
+        video_dir='D:/work/Python/YOLOV11/video_origin/data_video/dataset',
         weight={"fea": 0.5, "point": 0.3, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
-    VIEW_FRAME = 20
+    VIEW_FRAME = 200
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=1)
+    visualize_window(evaluator, window_idx=12)
     evaluator.print_summary()
