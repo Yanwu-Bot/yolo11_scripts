@@ -29,56 +29,48 @@ def exp_score(q, t=0.05):
     else:
         return 0.0
 
+def frame_score(q, t=0.05, k=2):
+    """
+    计算帧评分（与calculate_frame_score逻辑一致）
+    参数：
+        q: 加权平均误差（或直接传入误差值）
+        t: 阈值
+        k: 衰减系数
+    """
+    if q <= t:
+        return 100.0
+    else:
+        exceed = q - t
+        return 100 * np.exp(-k * exceed)
+
 S_ij = 100
 t = 0.05
 
 # 生成q值范围
 q_values = np.linspace(0, 1.5, 500)
 
-# 计算两种评分
+# 计算三种评分
 paper_scores = [paper_score(q, t, S_ij) for q in q_values]
 exp_scores = [exp_score(q, t) for q in q_values]
+frame_scores = [frame_score(q, t, k=2) for q in q_values]
 
 fig, ax = plt.subplots(1, 1, figsize=(12, 7))
 
-# 绘制论文评分曲线
+# 绘制三条评分曲线（无额外标记）
 ax.plot(q_values, paper_scores, linewidth=2.5, color='blue', label='论文评分函数 (分段线性)')
+ax.plot(q_values, exp_scores, linewidth=2.5, color='red', label='指数衰减评分函数 (分段k)')
+ax.plot(q_values, frame_scores, linewidth=2.5, color='green', label='帧评分函数 (k=4)')
 
-# 绘制指数衰减评分曲线
-ax.plot(q_values, exp_scores, linewidth=2.5, color='red', label='指数衰减评分函数')
-
-# 标记关键点
-ax.plot(t, 100, 'o', color='blue', markersize=8)
-ax.plot(1, 100 * t, 's', color='blue', markersize=8)
-ax.plot(1, 0, '^', color='blue', markersize=8)
-
-# 指数衰减的关键点
-t1 = t + 0.3
-score_at_t1 = 100 * np.exp(-2.5 * 0.3)
-ax.plot(t1, score_at_t1, 'ro', color='red', markersize=6)
-ax.plot(t + 0.3, score_at_t1, 'ro', markersize=6)
-
-ax.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
-ax.axhline(y=100, color='gray', linestyle='--', alpha=0.5, label='满分线 (100分)')
+# 只保留最基本的参考线（零线、满分线），无关键点标记
+ax.axhline(y=100, color='gray', linestyle='--', alpha=0.5)
 ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+ax.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
 
-# 添加区域标注
-# ax.fill_between([t, 1], [0, 0], [100, 100 * t], 
-#                  alpha=0.1, color='yellow', label='线性衰减区')
-# ax.fill_between([t, t+0.3], [0, 0], [100, score_at_t1], 
-#                  alpha=0.1, color='orange', label='指数衰减区1 (k=2.5)')
-# ax.fill_between([t+0.3, 1], [0, 0], [score_at_t1, 100 * np.exp(-5 * (1-t))], 
-#                  alpha=0.1, color='purple', label='指数衰减区2 (k=5)')
-
-# ax.set_xlabel('q (测量误差)', fontsize=12)
-# ax.set_ylabel('Score (分数)', fontsize=12)
-# ax.set_title(f'评分函数对比 (t = {t})', fontsize=14, fontweight='bold')
-# ax.set_xlim(0, 1.5)
-# ax.set_ylim(-5, 105)
-# ax.set_xticks(np.arange(0, 1.6, 0.2))
-# ax.set_yticks(np.arange(0, 101, 10))
-# ax.grid(True, alpha=0.3)
-# ax.legend(loc='upper right', fontsize=10)
+# 简洁的图例与坐标轴标签
+ax.set_xlabel('误差值 q')
+ax.set_ylabel('评分')
+ax.set_title('评分函数对比')
+ax.legend(loc='upper right')
 
 plt.tight_layout()
 plt.show()
@@ -89,20 +81,19 @@ print(f"评分函数对比 (阈值 t = {t})")
 print("="*80)
 print("\n不同误差值下的分数对比:")
 print("-"*80)
-print(f"{'q值':<10} {'论文评分':<15} {'指数衰减评分':<15} {'差异':<10}")
+print(f"{'q值':<10} {'论文评分':<15} {'指数衰减评分':<15} {'帧评分(k=4)':<15}")
 print("-"*80)
 
 test_q = [0, t, t+0.1, t+0.2, t+0.3, t+0.5, t+0.8, 1.0, 1.2]
 for q in test_q:
     paper = paper_score(q, t, 100)
     exp = exp_score(q, t)
-    diff = paper - exp
-    print(f"{q:<10.2f} {paper:<15.1f} {exp:<15.1f} {diff:<+10.1f}")
+    frame = frame_score(q, t, k=2)
+    print(f"{q:<10.2f} {paper:<15.1f} {exp:<15.1f} {frame:<15.1f}")
 
 print("\n" + "="*80)
-print("指数衰减函数分段说明:")
+print("评分函数说明:")
 print("="*80)
-print(f"1. q ≤ {t}: 满分 100 分")
-print(f"2. {t} < q ≤ {t+0.3}: 指数衰减, k=2.5")
-print(f"3. {t+0.3} < q ≤ 1: 指数衰减, k=5")
-print(f"4. q > 1: 0 分")
+print("论文评分函数: 分段线性，q≤t满分，t<q≤1线性下降，>1零分")
+print("指数衰减评分函数: 分段指数，q≤t满分，之后按不同衰减率下降")
+print("帧评分函数(k=4): 单指数衰减，q≤t满分，否则按 mu = 100 * exp(-k*(q-t)) 计算")

@@ -61,7 +61,7 @@ class VideoProcessor:
             return True
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         try:
-            self.yolo_model = YOLO('weights/yolo11m.pt')
+            self.yolo_model = YOLO('weights/yolo11s.pt')
             self.hrnet_model = HighResolutionNet(base_channel=32)
             weights_path = "HRnet/pytorch/pose_coco/pose_hrnet_w32_256x192.pth"
             keypoint_json_path = "HRnet/person_keypoints.json"
@@ -366,11 +366,11 @@ class VideoProcessor:
             np.save(os.path.join(out_dir, f"{self.video_name}_vector.npy"), vec_norm)
 
         if len(self.max_acc) > 0:
-            eps = auto_eps(self.max_acc, 8)
+            eps = auto_eps(self.max_acc, 10)
             print(f"Auto eps: {eps}")
             frames = list(range(2, len(self.max_acc) + 2))
             point_acceleration(frames, self.max_acc, self.video_name,
-                            use_dbscan=True, eps=eps, min_samples=8)
+                            use_dbscan=True, eps=eps, min_samples=10)
         print(f"所有特征已保存至 {out_dir}")
 
     def generate_video(self):
@@ -423,7 +423,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'D:/Dataset/sprint/Whole/run_9.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_6.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

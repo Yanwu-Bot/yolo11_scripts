@@ -470,8 +470,8 @@ class VideoScoreEvaluator:
 if __name__ == '__main__':
     # 创建评分器实例
     evaluator = VideoScoreEvaluator(
-        template_video='run_7.mp4',
-        test_video='run_10.mp4',
+        template_video='run_2.mp4',
+        test_video='run_5.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},

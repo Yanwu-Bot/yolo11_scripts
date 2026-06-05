@@ -216,11 +216,11 @@ class VideoScoreEvaluator:
         self.test_video_path = os.path.join(self.video_dir, test_video)
     
     def set_feature_weights(self, 
-                            angle_weight: float = 1.8,
-                            center_weight: float = 1.4,
-                            orientation_weight: float = 0.7,
-                            feet_distance_weight: float = 1.2,
-                            phase_weight: float = 1.3):
+                            angle_weight: float = 1,
+                            center_weight: float = 1,
+                            orientation_weight: float = 1,
+                            feet_distance_weight: float = 1,
+                            phase_weight: float = 1):
         self.angle_weights = [angle_weight] * 24
         self.center_weights = [center_weight] * 8
         self.orientation_weight = [orientation_weight]
@@ -230,36 +230,35 @@ class VideoScoreEvaluator:
                                 self.orientation_weight + self.feet_distance_weight + 
                                 self.phase_weights)
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05, k: float = 4) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05, k: float = 3) -> float:
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
         q_mean = np.sum(q * f_weights)
         exceed = q_mean - t
-        if q_mean <= t:
+        if exceed < 0:
             mu = 100.0
         else:
             mu = 100 * np.exp(-k * exceed)
         return mu
 
-    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=100) -> tuple:
+    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=120 , k = 3) -> tuple:
         # 排除面部关键点（索引0-4），仅使用躯干和四肢（5-16）
         body_indices = list(range(5, 17))  # 14个关键点
         test_body = test_points[body_indices]
         template_body = template_points[body_indices]
         dist = np.linalg.norm(test_body - template_body)
-        if dist <= threshold:
+        exceed = dist - threshold
+        if exceed < 0:
             score = 100
-        elif threshold < dist < threshold + 50:
-            score = (1 - ((dist - threshold) / 50)) * 100
         else:
-            score = 0.0
+            score = 100 * np.exp(-k * exceed)
         return score, dist
 
-    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 4) -> float:
+    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 3) -> float:
         q = np.abs(test_vec - template_vec)
         q_mean = np.mean(q)
         exceed = q_mean - t
-        if q_mean <= t:
+        if exceed < 0:
             mu = 100.0
         else:
             mu = 100 * np.exp(-k * exceed)
@@ -584,11 +583,11 @@ def visualize_window(evaluator, window_idx):
 
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
-        template_video='run_7.mp4',
-        test_video='run_9.mp4',
+        template_video='run_5.mp4',
+        test_video='run_7.mp4',
         features_dir='result/features',
         video_dir='D:/work/Python/YOLOV11/video_origin/data_video/dataset',
-        weight={"fea": 0.5, "point": 0.3, "displacement": 0.2},
+        weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
