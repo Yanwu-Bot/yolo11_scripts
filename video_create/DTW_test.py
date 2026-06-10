@@ -1,3 +1,4 @@
+#可用
 import cv2
 import numpy as np
 import matplotlib
@@ -67,8 +68,9 @@ class COCOGraph:
         self.get_adjacency()
     def get_edge(self):
         self_link = [(i, i) for i in range(self.num_node)]
-        neighbor_base = [(0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
-                         (11,12),(5,11),(6,12),(11,13),(13,15),(12,14),(14,16)]
+        neighbor_base = [
+            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),(11,13),(13,15),(12,14),(14,16)
+        ]
         self.edge = self_link + neighbor_base
     def get_hop_distance(self, num_node, edge, hop_size):
         A = np.zeros((num_node, num_node))
@@ -283,8 +285,6 @@ class VideoScoreEvaluator:
                                         f"{os.path.splitext(self.template_video)[0]}_normalized_points.npy")
         test_point_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_normalized_points.npy")
-        template_points = None
-        test_points = None
         if os.path.exists(template_point_path) and os.path.exists(test_point_path):
             template_points = np.load(template_point_path)
             test_points = np.load(test_point_path)
@@ -298,19 +298,18 @@ class VideoScoreEvaluator:
             self.kps1 = [self.kps1[idx] for idx in path[:, 1]]  
             self.kps2 = [self.kps2[idx] for idx in path[:, 0]]  
         else:
-            print("\n警告: 找不到关键点文件，跳过关键点评分")
+            print("\nPOINT ERR")
 
         template_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_vector.npy")
         test_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_vector.npy")
-        template_vector = None
-        test_vector = None
+
         if os.path.exists(template_vector_path) and os.path.exists(test_vector_path):
             template_vector = np.load(template_vector_path)
             test_vector = np.load(test_vector_path)
         else:
-            print("\n警告: 找不到向量文件，跳过位移得分")
+            print("\nVEC ERR")
 
         # 逐对计算得分
         frame_scores = []           # 特征得分
@@ -358,7 +357,7 @@ class VideoScoreEvaluator:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = ContrastiveEncoder(output_dim=128).to(device)
             model.load_state_dict(torch.load('result/GCN/model/best_6_3.pth', map_location=device))
-            scores = compare_videos(self.kps1, self.kps2, model, device, self.window)
+            scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
             self.window_sim_scores = scores # 记录窗口相似度得分
             L = len(path)
             window_fea_scores = []
@@ -506,9 +505,9 @@ def compare_videos(kps1, kps2, model, device, window_size):
     for start in range(0, L, window_size):
         end = min(start + window_size, L)
         win_len = end - start
-        win1 = np.zeros((window_size, 17, 2), dtype=np.float32)
+        win1 = np.zeros((window_size, 17, 2), dtype=np.float32) #创建全零数组
         win2 = np.zeros((window_size, 17, 2), dtype=np.float32)
-        win1[:win_len] = arr1[start:end]
+        win1[:win_len] = arr1[start:end] #填充数组，长度不够补0
         win2[:win_len] = arr2[start:end]
 
         def get_feature(arr_win):
@@ -517,7 +516,7 @@ def compare_videos(kps1, kps2, model, device, window_size):
                 feat = model(tensor)
             return feat.cpu().numpy()[0]
 
-        feat1 = get_feature(win1)
+        feat1 = get_feature(win1) #对每个窗口取特征
         feat2 = get_feature(win2)
         sim = np.dot(feat1, feat2)
         score = (sim + 1) / 2 * 100
@@ -595,5 +594,5 @@ if __name__ == '__main__':
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=12)
+    visualize_window(evaluator, window_idx=15)
     evaluator.print_summary()

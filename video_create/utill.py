@@ -146,7 +146,7 @@ class Draw():
             radius = 5
             cv2.circle(self.frame, circle_center, radius, (0, 150, 255), thickness=-1, lineType=cv2.LINE_AA)
     
-    def draw_select(self, d_h=True, d_b=True, d_l=True, d_p=True):
+    def draw_select(self, d_h=False, d_b=True, d_l=True, d_p=True):
         if d_h:
             self.draw_head()
         if d_b:

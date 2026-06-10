@@ -10,7 +10,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_6_3.pth'
+MODEL_SAVE_N = 'best_6_3.pth'  #窗口长度，滑动步长
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -22,8 +22,7 @@ class COCOGraph:
     def get_edge(self):
         self_link = [(i, i) for i in range(self.num_node)] #每个节点自连接
         neighbor_base = [  #连接关系
-            (0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
-            (11,12),(5,11),(6,12),(11,13),(13,15),(12,14),(14,16)
+            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),(11,13),(13,15),(12,14),(14,16)
         ]
         self.edge = self_link + neighbor_base
     def get_hop_distance(self, num_node, edge, hop_size):
