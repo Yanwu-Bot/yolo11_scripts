@@ -1,3 +1,4 @@
+#可用
 import math
 import os
 import json
@@ -18,7 +19,7 @@ rcParams['font.family'] = 'SimHei'
 
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 24
-    YOLO_CONF_THRESHOLD = 0.6
+    YOLO_CONF_THRESHOLD = 0.5
     NORMALIZE_TORSO_LENGTH = 100
     STEP_MIN_GAP = 0.2
     OUTPUT_VIDEO_SIZE = (1280, 720)
@@ -411,7 +412,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'D:/Dataset/sprint/Whole/run_6.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_3.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

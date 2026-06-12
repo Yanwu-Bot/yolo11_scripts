@@ -10,7 +10,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_6_3.pth'  #窗口长度，滑动步长
+MODEL_SAVE_N = 'best_8_3.pth'  #窗口长度，滑动步长
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -22,7 +22,8 @@ class COCOGraph:
     def get_edge(self):
         self_link = [(i, i) for i in range(self.num_node)] #每个节点自连接
         neighbor_base = [  #连接关系
-            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),(11,13),(13,15),(12,14),(14,16)
+            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),
+            (11,13),(13,15),(12,14),(14,16),(6,10),(5,9),(12,16),(11,15),(5,12),(6,11)
         ]
         self.edge = self_link + neighbor_base
     def get_hop_distance(self, num_node, edge, hop_size):
@@ -83,8 +84,8 @@ class STGC_block(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU()
         )
-    def forward(self, x, A):
-        return self.tgc(self.sgc(x, A * self.M))
+    def forward(self, x, A, B):
+        return self.tgc(self.sgc(x, A * self.M + B))
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
@@ -136,6 +137,7 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
+        self.B = nn.Parameter(torch.zeros(A_size)) #自学习边
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -155,12 +157,12 @@ class ContrastiveEncoder(nn.Module):
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
         x = self.bn(x)
         x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        x = self.stgc1(x, self.A)
-        x = self.stgc2(x, self.A)
-        x = self.stgc3(x, self.A)
-        x = self.stgc4(x, self.A)
-        x = self.stgc5(x, self.A)
-        x = self.stgc6(x, self.A)
+        x = self.stgc1(x, self.A, self.B)
+        x = self.stgc2(x, self.A, self.B)
+        x = self.stgc3(x, self.A, self.B)
+        x = self.stgc4(x, self.A, self.B)
+        x = self.stgc5(x, self.A, self.B)
+        x = self.stgc6(x, self.A, self.B)
         x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
@@ -380,4 +382,4 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
     )
-    train_contrastive(dataset, epochs=300, batch_size=128, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=200, batch_size=128, lr=0.001, temperature=0.1)

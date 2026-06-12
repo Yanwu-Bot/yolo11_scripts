@@ -15,6 +15,7 @@ rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 
 WINDOWSIZE = 6 #窗口大小
+MODEL = 'result/GCN/model/best_8_3.pth'
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
@@ -69,7 +70,8 @@ class COCOGraph:
     def get_edge(self):
         self_link = [(i, i) for i in range(self.num_node)]
         neighbor_base = [
-            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),(11,13),(13,15),(12,14),(14,16)
+            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),
+            (11,13),(13,15),(12,14),(14,16),(6,10),(5,9),(12,16),(11,15),(5,12),(6,11)
         ]
         self.edge = self_link + neighbor_base
     def get_hop_distance(self, num_node, edge, hop_size):
@@ -122,8 +124,8 @@ class STGC_block(nn.Module):
             nn.Conv2d(out_channels, out_channels, (t_kernel_size,1), (stride,1),
                       ((t_kernel_size-1)//2,0)),
             nn.BatchNorm2d(out_channels), nn.ReLU())
-    def forward(self, x, A):
-        return self.tgc(self.sgc(x, A * self.M))
+    def forward(self, x, A, B):
+        return self.tgc(self.sgc(x, A * self.M + B))
 
 class ContrastiveEncoder(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
@@ -132,6 +134,7 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
+        self.B = nn.Parameter(torch.zeros(A_size)) #自学习边
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -151,12 +154,12 @@ class ContrastiveEncoder(nn.Module):
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
         x = self.bn(x)
         x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        x = self.stgc1(x, self.A)
-        x = self.stgc2(x, self.A)
-        x = self.stgc3(x, self.A)
-        x = self.stgc4(x, self.A)
-        x = self.stgc5(x, self.A)
-        x = self.stgc6(x, self.A)
+        x = self.stgc1(x, self.A, self.B)
+        x = self.stgc2(x, self.A, self.B)
+        x = self.stgc3(x, self.A, self.B)
+        x = self.stgc4(x, self.A, self.B)
+        x = self.stgc5(x, self.A, self.B)
+        x = self.stgc6(x, self.A, self.B)
         x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
@@ -356,7 +359,7 @@ class VideoScoreEvaluator:
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = ContrastiveEncoder(output_dim=128).to(device)
-            model.load_state_dict(torch.load('result/GCN/model/best_6_3.pth', map_location=device))
+            model.load_state_dict(torch.load(MODEL, map_location=device))
             scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
             self.window_sim_scores = scores # 记录窗口相似度得分
             L = len(path)
@@ -583,7 +586,7 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_7.mp4',
+        test_video='run_3.mp4',
         features_dir='result/features',
         video_dir='D:/work/Python/YOLOV11/video_origin/data_video/dataset',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
@@ -594,5 +597,5 @@ if __name__ == '__main__':
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=15)
+    visualize_window(evaluator, window_idx=28)
     evaluator.print_summary()
