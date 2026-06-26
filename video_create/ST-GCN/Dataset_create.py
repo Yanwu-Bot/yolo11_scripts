@@ -212,10 +212,10 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
         return torch.FloatTensor(anchor_data).permute(2, 0, 1)
 
 if __name__ == '__main__':
-    video_folder = 'video_origin/data_video/dataset/'
+    video_folder = 'D:/Dataset/sprint/Whole'
     dataset = ContrastiveWindowDataset(
         video_source=video_folder,
-        window_size=6,
+        window_size=8,
         stride=3,
         normalize=True,
         save_path='result/GCN/dataset/dataset.npz'

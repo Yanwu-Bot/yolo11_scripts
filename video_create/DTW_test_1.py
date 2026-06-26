@@ -1,4 +1,4 @@
-#可用
+# DTW_test.py用原来的序列作为窗口相似度，效果不太好
 import cv2
 import numpy as np
 import matplotlib
@@ -21,42 +21,31 @@ class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
         super().__init__()
-        self.drop_ratio = drop_ratio  # 丢弃比例
+        self.drop_ratio = drop_ratio
         self.lambda_ = lambda_
 
     def forward(self, x):
-        # x: (B, C, T, V)
         B, C, T, V = x.shape
         N = T * V
-        # 计算每个通道的均值和方差
-        x_flat = x.view(B, C, N)  # (B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)   # (B, C, 1)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)  # (B, C, 1)
-        # 计算能量 et = 4*(var+λ) / ((t-mu)^2 + 2*var + 2λ)
+        x_flat = x.view(B, C, N)
+        mu = x_flat.mean(dim=2, keepdim=True)
+        var = x_flat.var(dim=2, keepdim=True, unbiased=False)
         diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)  # (B, C, N) 越小越重要
-        # 重要性 = 1/energy，并经过sigmoid得到注意力图
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))  # (B, C, N)
-        # 将重要性最高的 drop_ratio 比例的特征丢弃
+        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)
+        importance = torch.sigmoid(1.0 / (energy + 1e-10))
         k = int(N * self.drop_ratio)
         if k > 0:
-            # 在每个通道内，找到重要性最高的 k 个位置的索引
             topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            # 生成丢弃掩码 (保留位置为1，丢弃位置为0)
             mask = torch.ones_like(importance)
-            # scatter_ 将 mask 中这些索引位置置0
             mask.scatter_(2, topk_indices, 0.0)
         else:
             mask = torch.ones_like(importance)
-        # 应用掩码并重新缩放
         x_masked = x_flat * mask
-        # 缩放因子：总元素数 / 保留元素数
         keep_ratio = 1.0 - self.drop_ratio
         if keep_ratio > 0:
             x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
         else:
-            x_masked = x_masked * 0  # 全部丢弃，置零
-        # 恢复原始形状
+            x_masked = x_masked * 0
         out = x_masked.view(B, C, T, V)
         return out
 
@@ -134,7 +123,7 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        self.B = nn.Parameter(torch.zeros(A_size)) #自学习边
+        self.B = nn.Parameter(torch.zeros(A_size))
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -142,8 +131,7 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # 添加 EADM 模块
-        self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
+        self.eadm = EADM(drop_ratio=0.3)
         self.projection = nn.Sequential(
             nn.Linear(64, 128),
             nn.ReLU(),
@@ -210,9 +198,10 @@ class VideoScoreEvaluator:
         self.mu =None
         self.sigma = None
 
-        self.kps1 = []
-        self.kps2 = []
-        self.window_sim_scores = None  # 保存每个窗口的ST-GCN相似度得分
+        # 新增：保存原始关键点
+        self.template_points_original = None
+        self.test_points_original = None
+        self.window_sim_scores = None
 
     def set_videos(self, template_video: str, test_video: str):
         self.template_video = template_video
@@ -247,8 +236,7 @@ class VideoScoreEvaluator:
         return mu
 
     def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=120 , k = 3) -> tuple:
-        # 排除面部关键点（索引0-4），仅使用躯干和四肢（5-16）
-        body_indices = list(range(5, 17))  # 14个关键点
+        body_indices = list(range(5, 17))
         test_body = test_points[body_indices]
         template_body = template_points[body_indices]
         dist = np.linalg.norm(test_body - template_body)
@@ -291,31 +279,33 @@ class VideoScoreEvaluator:
         if os.path.exists(template_point_path) and os.path.exists(test_point_path):
             template_points = np.load(template_point_path)
             test_points = np.load(test_point_path)
-            self.kps1 = template_points.tolist()
-            self.kps2 = test_points.tolist()
+            # 保存原始关键点（未重排）
+            self.template_points_original = template_points.copy()
+            self.test_points_original = test_points.copy()
+            print(f"原始关键点长度 - 模板: {len(template_points)}, 测试: {len(test_points)}")
             if len(template_points.shape) == 3 and template_points.shape[2] == 3:
                 template_points = template_points[:, :, :2]
             if len(test_points.shape) == 3 and test_points.shape[2] == 3:
                 test_points = test_points[:, :, :2]
-            # 利用 path 生成对齐后的关键点序列
-            self.kps1 = [self.kps1[idx] for idx in path[:, 1]]  
-            self.kps2 = [self.kps2[idx] for idx in path[:, 0]]  
         else:
             print("\nPOINT ERR")
+            template_points = None
+            test_points = None
 
         template_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_vector.npy")
         test_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_vector.npy")
-
         if os.path.exists(template_vector_path) and os.path.exists(test_vector_path):
             template_vector = np.load(template_vector_path)
             test_vector = np.load(test_vector_path)
         else:
             print("\nVEC ERR")
+            template_vector = None
+            test_vector = None
 
         # 逐对计算得分
-        frame_scores = []           # 特征得分
+        frame_scores = []
         q_mean_list = []
         point_frame_scores = []
         displacement_frame_scores = []
@@ -360,8 +350,14 @@ class VideoScoreEvaluator:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = ContrastiveEncoder(output_dim=128).to(device)
             model.load_state_dict(torch.load(MODEL, map_location=device))
-            scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
-            self.window_sim_scores = scores # 记录窗口相似度得分
+
+            # 调用修改后的compare_videos，传入原始关键点和path
+            scores = compare_videos(
+                self.template_points_original,
+                self.test_points_original,
+                model, device, self.window, path
+            )
+            self.window_sim_scores = scores
             L = len(path)
             window_fea_scores = []
             window_point_scores = []
@@ -402,13 +398,10 @@ class VideoScoreEvaluator:
                         self.weight['displacement'] * vec[i]
                 scores.append(score)
             scores = np.array(scores)
-            self.window_sim_scores = np.array(self.window_sim_scores)/100 #缩放
-
-            #最终得分计算，结合相似度
-            alpha = 0.2  # 可调
+            self.window_sim_scores = np.array(self.window_sim_scores)/100
+            alpha = 0.25
             scores = scores * (1 - alpha * (1 - self.window_sim_scores))
             self.mu = scores.mean()
-
             diff = scores - self.mu
             total = np.sum(diff ** 2)
             self.sigma = math.sqrt(total / (length - 1)) if length > 1 else 0.0
@@ -434,7 +427,9 @@ class VideoScoreEvaluator:
         
         path = self.calculate_video_score(self.test_features, self.template_features)
         self.compute_pairwise_scores(path, use_window=True)
-        
+        return (self.feat_score, self.point_score, self.frame_scores, self.path,
+                self.q_mean_list, self.test_features, self.template_features,
+                self.point_distances)
 
     def visualize_aligned_frames(self, pair_index: int):
         if self.path is None:
@@ -500,21 +495,37 @@ class VideoScoreEvaluator:
         print(f"{'='*60}")
         print(self.window_sim_scores)
 
-#  窗口相似度对比
-def compare_videos(kps1, kps2, model, device, window_size):
+# 窗口相似度对比
+def compare_videos(template_points, test_points, model, device, window_size, path):
     model.eval()
-    arr1 = np.array(kps1, dtype=np.float32)  # (L, 17, 2)
-    arr2 = np.array(kps2, dtype=np.float32)  # (L, 17, 2)
-    L = len(arr1)  
+    L = len(path)
     scores = []
+    max_t = len(template_points) - 1
+    max_te = len(test_points) - 1
+
+    if np.any(path[:, 1] > max_t) or np.any(path[:, 0] > max_te):
+        print("警告：DTW路径中存在超出关键点范围的索引，将自动裁剪到有效范围内。")
 
     for start in range(0, L, window_size):
         end = min(start + window_size, L)
-        win_len = end - start
-        win1 = np.zeros((window_size, 17, 2), dtype=np.float32) #创建全零数组
-        win2 = np.zeros((window_size, 17, 2), dtype=np.float32)
-        win1[:win_len] = arr1[start:end] #填充数组，长度不够补0
-        win2[:win_len] = arr2[start:end]
+        win_path = path[start:end]
+        win_template_kps = []
+        win_test_kps = []
+        for t_idx, te_idx in win_path:
+            # 保护索引不越界
+            t_idx_safe = min(t_idx, max_t)
+            te_idx_safe = min(te_idx, max_te)
+            win_template_kps.append(template_points[t_idx_safe])
+            win_test_kps.append(test_points[te_idx_safe])
+
+        arr_template = np.array(win_template_kps, dtype=np.float32)
+        arr_test = np.array(win_test_kps, dtype=np.float32)
+
+        # 不足窗口长度：重复最后一帧
+        if len(arr_template) < window_size:
+            pad = window_size - len(arr_template)
+            arr_template = np.pad(arr_template, ((0, pad), (0,0), (0,0)), mode='edge')
+            arr_test = np.pad(arr_test, ((0, pad), (0,0), (0,0)), mode='edge')
 
         def get_feature(arr_win):
             tensor = torch.FloatTensor(arr_win).permute(2,0,1).unsqueeze(0).to(device)
@@ -522,9 +533,9 @@ def compare_videos(kps1, kps2, model, device, window_size):
                 feat = model(tensor)
             return feat.cpu().numpy()[0]
 
-        feat1 = get_feature(win1) #对每个窗口取特征
-        feat2 = get_feature(win2)
-        sim = np.dot(feat1, feat2)
+        feat_template = get_feature(arr_template)
+        feat_test = get_feature(arr_test)
+        sim = np.dot(feat_template, feat_test)
         score = (sim + 1) / 2 * 100
         scores.append(score)
     return scores
@@ -542,24 +553,19 @@ def visualize_window(evaluator, window_idx):
     L = len(evaluator.path)
     start = window_idx * window_size
     end = min(start + window_size, L)
-    window_path = evaluator.path[start:end]  # (实际帧数, 2)
+    window_path = evaluator.path[start:end]
 
-    # 读取对应帧
     cap_t = cv2.VideoCapture(evaluator.template_video_path)
     cap_test = cv2.VideoCapture(evaluator.test_video_path)
 
-    n_frames = end - start
+    n_frames = len(window_path)
     fig, axes = plt.subplots(2, n_frames, figsize=(3*n_frames, 6))
     if n_frames == 1:
         axes = axes.reshape(2, 1)
     fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',
                     fontsize=14)
 
-    for i in range(n_frames):
-        t_idx = int(window_path[i, 1])   # 模板帧索引
-        test_idx = int(window_path[i, 0]) # 测试帧索引
-
-        # 模板帧
+    for i, (te_idx, t_idx) in enumerate(window_path):
         cap_t.set(cv2.CAP_PROP_POS_FRAMES, t_idx)
         ret_t, frame_t = cap_t.read()
         if ret_t:
@@ -570,13 +576,12 @@ def visualize_window(evaluator, window_idx):
             axes[0, i].text(0.5, 0.5, 'missing', ha='center')
         axes[0, i].axis('off')
 
-        # 测试帧
-        cap_test.set(cv2.CAP_PROP_POS_FRAMES, test_idx)
+        cap_test.set(cv2.CAP_PROP_POS_FRAMES, te_idx)
         ret_te, frame_te = cap_test.read()
         if ret_te:
             frame_te_rgb = cv2.cvtColor(frame_te, cv2.COLOR_BGR2RGB)
             axes[1, i].imshow(frame_te_rgb)
-            axes[1, i].set_title(f'Test {test_idx}')
+            axes[1, i].set_title(f'Test {te_idx}')
         else:
             axes[1, i].text(0.5, 0.5, 'missing', ha='center')
         axes[1, i].axis('off')
@@ -599,6 +604,5 @@ if __name__ == '__main__':
     VIEW_FRAME = 200
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
-    # 可视化第i个窗口
     visualize_window(evaluator, window_idx=14)
     evaluator.print_summary()
