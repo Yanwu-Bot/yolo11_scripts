@@ -1,4 +1,4 @@
-#先改MODEL_SAVE_N 保存模型名字，再改窗口大小，batch大小，学习率，温度，各种数据增强参数
+# ST-GCN.py（自学习边修正版）
 import os
 import math
 import random
@@ -10,7 +10,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_8_3.pth'  #窗口长度，滑动步长
+MODEL_SAVE_N = 'best_8_2.pth'  #窗口长度，滑动步长
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -20,8 +20,8 @@ class COCOGraph:
         self.hop_dis = self.get_hop_distance(self.num_node, self.edge, hop_size=hop_size)
         self.get_adjacency()
     def get_edge(self):
-        self_link = [(i, i) for i in range(self.num_node)] #每个节点自连接
-        neighbor_base = [  #连接关系
+        self_link = [(i, i) for i in range(self.num_node)]
+        neighbor_base = [
             (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),
             (11,13),(13,15),(12,14),(14,16),(6,10),(5,9),(12,16),(11,15),(5,12),(6,11)
         ]
@@ -32,35 +32,34 @@ class COCOGraph:
             A[j, i] = 1
             A[i, j] = 1
         hop_dis = np.zeros((num_node, num_node)) + np.inf
-        transfer_mat = [np.linalg.matrix_power(A, d) for d in range(hop_size+1)]  #n步到达
+        transfer_mat = [np.linalg.matrix_power(A, d) for d in range(hop_size+1)]
         arrive_mat = (np.stack(transfer_mat) > 0)
         for d in range(hop_size, -1, -1):
             hop_dis[arrive_mat[d]] = d
-        return hop_dis  #返回各点间最短到达距离
+        return hop_dis
     def get_adjacency(self):
         valid_hop = range(0, self.hop_size+1, 1)
         adjacency = np.zeros((self.num_node, self.num_node))
         for hop in valid_hop:
-            adjacency[self.hop_dis == hop] = 1  #得到各个到达距离图
+            adjacency[self.hop_dis == hop] = 1
         normalize_adjacency = self.normalize_digraph(adjacency)
         A = np.zeros((len(valid_hop), self.num_node, self.num_node))
         for i, hop in enumerate(valid_hop):
-            A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop] #生成子图
-        self.A = A #（3，17，17）
+            A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop]
+        self.A = A
     def normalize_digraph(self, A):
         Dl = np.sum(A, 0)
         Dn = np.zeros((A.shape[0], A.shape[0]))
         for i in range(A.shape[0]):
             if Dl[i] > 0:
                 Dn[i, i] = Dl[i]**(-1)
-        return np.dot(A, Dn) #按入度归一化
+        return np.dot(A, Dn)
 
-#获取所有跳数的信息，空间卷积
-class SpatialGraphConvolution(nn.Module): 
+class SpatialGraphConvolution(nn.Module):
     def __init__(self, in_channels, out_channels, s_kernel_size):
         super().__init__()
         self.s_kernel_size = s_kernel_size
-        self.conv = nn.Conv2d(in_channels, out_channels * s_kernel_size, 1) #输出out_channels * s_kernel_size对应多个子图组
+        self.conv = nn.Conv2d(in_channels, out_channels * s_kernel_size, 1)
     def forward(self, x, A):
         x = self.conv(x)
         n, kc, t, v = x.size()
@@ -71,11 +70,11 @@ class SpatialGraphConvolution(nn.Module):
 class STGC_block(nn.Module):
     def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.3):
         super().__init__()
-        self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0]) #空间特征聚合
-        self.M = nn.Parameter(torch.ones(A_size)) #可学习权重初始化
-        #时序卷积模块
-        #T-GCN数据结构(B,C,T,V)
-        self.tgc = nn.Sequential( 
+        self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
+        self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
+        # ★★★ 每个 block 独立的自学习边偏置 ★★★
+        self.B = nn.Parameter(torch.zeros(A_size))         # 自学习边
+        self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -84,49 +83,38 @@ class STGC_block(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU()
         )
-    def forward(self, x, A, B):
-        return self.tgc(self.sgc(x, A * self.M + B))
+    # ★★★ forward 不再接收 B 参数，直接使用 self.B ★★★
+    def forward(self, x, A):
+        return self.tgc(self.sgc(x, A * self.M + self.B))
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
         super().__init__()
-        self.drop_ratio = drop_ratio  # 丢弃比例
+        self.drop_ratio = drop_ratio
         self.lambda_ = lambda_
-
     def forward(self, x):
-        # x: (B, C, T, V)
         B, C, T, V = x.shape
         N = T * V
-        # 计算每个通道的均值和方差
-        x_flat = x.view(B, C, N)  # (B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)   # (B, C, 1)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)  # (B, C, 1)
-        # 计算能量 et = 4*(var+λ) / ((t-mu)^2 + 2*var + 2λ)
+        x_flat = x.view(B, C, N)
+        mu = x_flat.mean(dim=2, keepdim=True)
+        var = x_flat.var(dim=2, keepdim=True, unbiased=False)
         diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)  # (B, C, N) 越小越重要
-        # 重要性 = 1/energy，并经过sigmoid得到注意力图
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))  # (B, C, N)
-        # 将重要性最高的 drop_ratio 比例的特征丢弃
+        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)
+        importance = torch.sigmoid(1.0 / (energy + 1e-10))
         k = int(N * self.drop_ratio)
         if k > 0:
-            # 在每个通道内，找到重要性最高的 k 个位置的索引
             topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            # 生成丢弃掩码 (保留位置为1，丢弃位置为0)
             mask = torch.ones_like(importance)
-            # scatter_ 将 mask 中这些索引位置置0
             mask.scatter_(2, topk_indices, 0.0)
         else:
             mask = torch.ones_like(importance)
-        # 应用掩码并重新缩放
         x_masked = x_flat * mask
-        # 缩放因子：总元素数 / 保留元素数
         keep_ratio = 1.0 - self.drop_ratio
         if keep_ratio > 0:
             x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
         else:
-            x_masked = x_masked * 0  # 全部丢弃，置零
-        # 恢复原始形状
+            x_masked = x_masked * 0
         out = x_masked.view(B, C, T, V)
         return out
 
@@ -137,7 +125,7 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        self.B = nn.Parameter(torch.zeros(A_size)) #自学习边
+        # ★★★ 删除全局 self.B ★★★
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -145,8 +133,7 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # 添加 EADM 模块
-        self.eadm = EADM(drop_ratio=0.3)  # 可调整丢弃比例
+        # self.eadm = EADM(drop_ratio=0.2)
         self.projection = nn.Sequential(
             nn.Linear(64, 128),
             nn.ReLU(),
@@ -157,44 +144,38 @@ class ContrastiveEncoder(nn.Module):
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
         x = self.bn(x)
         x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        x = self.stgc1(x, self.A, self.B)
-        x = self.stgc2(x, self.A, self.B)
-        x = self.stgc3(x, self.A, self.B)
-        x = self.stgc4(x, self.A, self.B)
-        x = self.stgc5(x, self.A, self.B)
-        x = self.stgc6(x, self.A, self.B)
-        x = self.eadm(x)
+        # ★★★ 调用 block 时只传入 A，不再传入 B ★★★
+        x = self.stgc1(x, self.A)
+        x = self.stgc2(x, self.A)
+        x = self.stgc3(x, self.A)
+        x = self.stgc4(x, self.A)
+        x = self.stgc5(x, self.A)
+        x = self.stgc6(x, self.A)
+        # x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-# 损失函数 (NT-Xent)
+# 损失函数等后续代码完全不变
 def nt_xent_loss(z1, z2, temperature=0.5):
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
     mask = torch.eye(2*batch_size, device=sim.device).bool()
     pos_mask = torch.zeros_like(sim, dtype=torch.bool)
-    for i in range(batch_size):  #标记正样本位置
+    for i in range(batch_size):
         pos_mask[i, i+batch_size] = True
         pos_mask[i+batch_size, i] = True
     sim = sim[~mask].view(2*batch_size, -1)
-    #获取正样本索引，(2B, 1)
     pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
-    #获取负样本索引，(2B, 2B-2)
     neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
-    # 保存原始相似度（未除以温度）用于统计
     pos_sim_raw = pos_sim.clone()
     neg_sim_raw = neg_sim.clone()
     pos_sim = pos_sim / temperature
     neg_sim = neg_sim / temperature
-    #每行第一个为正样本相似度
     logits = torch.cat([pos_sim, neg_sim], dim=1)
-    #标签均为0代表第0个为正样本
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
-    #交叉熵
     loss = F.cross_entropy(logits, labels)
-    # 计算统计量
     pos_avg = pos_sim_raw.mean().item()
     neg_avg = neg_sim_raw.mean().item()
     diff = pos_avg - neg_avg
@@ -203,19 +184,17 @@ def nt_xent_loss(z1, z2, temperature=0.5):
 class ContrastiveDatasetFromFile(Dataset):
     def __init__(self, npz_path, window_size=6, transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
-        self.windows = data['windows']          # (N, W, 17, 2)
+        self.windows = data['windows']
         self.window_size = window_size
-        # 使用与 Dataset_create.py 一致的增强参数（含 flip）
         self.transform_params = transform_params or {
             'rotation': 5, 'scale': 0.05, 'noise': 0.02, 'mask': 0.1,
-            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2 ,'delete':0.1
+            'reverse': 0.2, 'GB': 0.3, 'shear': 0.05, 'flip': 0.2, 'delete':0.1
         }
         print(f"加载数据集: {npz_path}, 共 {len(self.windows)} 个窗口")
 
     def _random_transform(self, window):
         w = window.copy()
         T, V, C = w.shape
-        # 旋转
         if 'rotation' in self.transform_params and self.transform_params['rotation'] > 0:
             angle = random.uniform(-self.transform_params['rotation'], self.transform_params['rotation'])
             rad = math.radians(angle)
@@ -226,36 +205,29 @@ class ContrastiveDatasetFromFile(Dataset):
             rot[..., 0] = w_centered[..., 0]*cos - w_centered[..., 1]*sin
             rot[..., 1] = w_centered[..., 0]*sin + w_centered[..., 1]*cos
             w = rot + hip_center
-        # 缩放
         if 'scale' in self.transform_params and self.transform_params['scale'] > 0:
             scale = 1.0 + random.uniform(-self.transform_params['scale'], self.transform_params['scale'])
             w = w * scale
-        # 噪声
         if 'noise' in self.transform_params and self.transform_params['noise'] > 0:
             noise = np.random.normal(0, self.transform_params['noise'], w.shape)
             w = w + noise
-        # 遮挡
         if 'mask' in self.transform_params and self.transform_params['mask'] > 0:
             mask = np.random.binomial(1, 1 - self.transform_params['mask'], size=(T, V, 1))
             w = w * mask
-        # 时间翻转
         if 'reverse' in self.transform_params and self.transform_params['reverse'] > 0:
             if random.random() < self.transform_params['reverse']:
                 w = w[::-1].copy()
-        # 高斯模糊
         if 'GB' in self.transform_params and self.transform_params['GB'] > 0:
             if random.random() < self.transform_params['GB']:
                 sigma = random.uniform(0.3, 1.0)
                 radius = int(4 * sigma + 0.5)
-                # 确保核长度不超过时间帧数 T
                 max_radius = (T - 1) // 2
                 if radius > max_radius:
                     radius = max_radius
                     if radius <= 0:
-                        # 无法进行卷积，跳过
                         pass
                     else:
-                        sigma = radius / 4.0  # 近似校准
+                        sigma = radius / 4.0
                 if radius > 0:
                     t = np.arange(-radius, radius + 1)
                     kernel = np.exp(-0.5 * (t / sigma) ** 2)
@@ -265,7 +237,6 @@ class ContrastiveDatasetFromFile(Dataset):
                         for c in range(C):
                             w_smooth[:, v, c] = np.convolve(w[:, v, c], kernel, mode='same')
                     w = w_smooth
-        # 剪切
         if 'shear' in self.transform_params and self.transform_params['shear'] > 0:
             shx = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
             shy = random.uniform(-self.transform_params['shear'], self.transform_params['shear'])
@@ -273,7 +244,6 @@ class ContrastiveDatasetFromFile(Dataset):
             y_old = w[..., 1].copy()
             w[..., 0] = x_old + shx * y_old
             w[..., 1] = y_old + shy * x_old
-        # 左右翻转
         if 'flip' in self.transform_params and random.random() < self.transform_params['flip']:
             swap_pairs = [
                 (1,2), (3,4), (5,6), (7,8), (9,10),
@@ -285,8 +255,8 @@ class ContrastiveDatasetFromFile(Dataset):
                 w_flipped[:, b, :] = -w[:, a, :]
             w = w_flipped
         if 'delete' in self.transform_params and random.random() < self.transform_params['delete']:
-            drop_ratio = random.uniform(0.05, 0.2)  # 丢弃5%~20%的帧
-            num_drop = max(1, int(T * drop_ratio))   # 至少丢弃一帧
+            drop_ratio = random.uniform(0.05, 0.2)
+            num_drop = max(1, int(T * drop_ratio))
             drop_indices = random.sample(range(T), num_drop)
             w[drop_indices, :, :] = 0.0
         return w
@@ -305,13 +275,10 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ContrastiveEncoder(output_dim=128).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.7) #当五个epoch损失值没有下降即学习率乘以factor
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     best_loss = float('inf')
     save_dir = 'result/GCN/model'
     os.makedirs(save_dir, exist_ok=True)
-
-    # 记录统计量
     loss_history = []
     pos_history = []
     neg_history = []
@@ -324,7 +291,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         total_neg = 0.0
         total_diff = 0.0
         num_batches = 0
-        for anchor, positive in loader:   # 注意：只解包两个张量
+        for anchor, positive in loader:
             anchor = anchor.to(device)
             positive = positive.to(device)
             z1 = model(anchor)
@@ -342,16 +309,15 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         avg_pos = total_pos / num_batches
         avg_neg = total_neg / num_batches
         avg_diff = total_diff / num_batches
-        #scheduler.step(avg_loss)
         loss_history.append(avg_loss)
         pos_history.append(avg_pos)
         neg_history.append(avg_neg)
         diff_history.append(avg_diff)
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}, "
-            f"PosSim: {avg_pos:.4f}, NegSim: {avg_neg:.4f}, Diff: {avg_diff:.4f}")
+              f"PosSim: {avg_pos:.4f}, NegSim: {avg_neg:.4f}, Diff: {avg_diff:.4f}")
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), os.path.join(save_dir, MODEL_SAVE_N ))
+            torch.save(model.state_dict(), os.path.join(save_dir, MODEL_SAVE_N))
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
 
@@ -361,7 +327,6 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     ax1.set_ylabel('Loss')
     ax1.set_title('Training Loss')
     ax1.grid(True)
-
     ax2.plot(pos_history, label='Pos Sim', color='blue')
     ax2.plot(neg_history, label='Neg Sim', color='red')
     ax2.plot(diff_history, label='Diff (Pos-Neg)', color='green')
@@ -370,7 +335,6 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     ax2.set_title('Positive vs Negative Similarity')
     ax2.legend()
     ax2.grid(True)
-
     plt.tight_layout()
     plt.show()
 
@@ -382,4 +346,4 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
     )
-    train_contrastive(dataset, epochs=150, batch_size=64, lr=0.001, temperature=0.07)
+    train_contrastive(dataset, epochs=100, batch_size=64, lr=0.001, temperature=0.07)

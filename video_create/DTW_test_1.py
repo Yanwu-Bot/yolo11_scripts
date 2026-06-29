@@ -13,17 +13,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-
 WINDOWSIZE = 8 #窗口大小
-MODEL = 'result/GCN/model/best_8_3_150_64.pth'
-
+MODEL = 'result/GCN/model/best_8_3.pth'
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
         super().__init__()
         self.drop_ratio = drop_ratio
         self.lambda_ = lambda_
-
     def forward(self, x):
         B, C, T, V = x.shape
         N = T * V
@@ -48,7 +45,6 @@ class EADM(nn.Module):
             x_masked = x_masked * 0
         out = x_masked.view(B, C, T, V)
         return out
-
 class COCOGraph:
     def __init__(self, hop_size=2):
         self.num_node = 17
@@ -90,7 +86,6 @@ class COCOGraph:
             if Dl[i]>0:
                 Dn[i,i] = Dl[i]**(-1)
         return np.dot(A, Dn)
-
 class SpatialGraphConvolution(nn.Module):
     def __init__(self, in_channels, out_channels, s_kernel_size):
         super().__init__()
@@ -102,20 +97,21 @@ class SpatialGraphConvolution(nn.Module):
         x = x.view(n, self.s_kernel_size, kc//self.s_kernel_size, t, v)
         x = torch.einsum('nkctv,kvw->nctw', (x, A))
         return x.contiguous()
-
 class STGC_block(nn.Module):
     def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.5):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
         self.M = nn.Parameter(torch.ones(A_size))
+        # ★★★ 每个 block 独立的自学习边偏置 ★★★
+        self.B = nn.Parameter(torch.zeros(A_size))
         self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels), nn.ReLU(), nn.Dropout(dropout),
             nn.Conv2d(out_channels, out_channels, (t_kernel_size,1), (stride,1),
                       ((t_kernel_size-1)//2,0)),
             nn.BatchNorm2d(out_channels), nn.ReLU())
-    def forward(self, x, A, B):
-        return self.tgc(self.sgc(x, A * self.M + B))
-
+    # ★★★ forward 不再接收 B 参数，直接使用 self.B ★★★
+    def forward(self, x, A):
+        return self.tgc(self.sgc(x, A * self.M + self.B))
 class ContrastiveEncoder(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
         super().__init__()
@@ -123,7 +119,7 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        self.B = nn.Parameter(torch.zeros(A_size))
+        # ★★★ 删除全局 self.B ★★★
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -142,12 +138,13 @@ class ContrastiveEncoder(nn.Module):
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
         x = self.bn(x)
         x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        x = self.stgc1(x, self.A, self.B)
-        x = self.stgc2(x, self.A, self.B)
-        x = self.stgc3(x, self.A, self.B)
-        x = self.stgc4(x, self.A, self.B)
-        x = self.stgc5(x, self.A, self.B)
-        x = self.stgc6(x, self.A, self.B)
+        # ★★★ 调用 block 时只传入 A ★★★
+        x = self.stgc1(x, self.A)
+        x = self.stgc2(x, self.A)
+        x = self.stgc3(x, self.A)
+        x = self.stgc4(x, self.A)
+        x = self.stgc5(x, self.A)
+        x = self.stgc6(x, self.A)
         x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
