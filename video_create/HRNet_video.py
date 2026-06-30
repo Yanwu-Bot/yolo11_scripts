@@ -192,12 +192,100 @@ class VideoProcessor:
                 else:
                     keypoints_list.append([0, 0, 0.0])
         return [keypoints_list], scores
+    
+    #角度修正函数
+    def fix_endpoint_by_angle(self,mid_point, end_point, max_deg, deg, max_len, statue):
+        dx = end_point[0] - mid_point[0]
+        dy = end_point[1] - mid_point[1]
+        length = math.sqrt(dx**2 + dy**2)
+        #1用于手臂小于角度，2用于腿大于角度
+        if statue == 1:
+            if deg > max_deg:
+                diff = deg - max_deg
+                diff_rad = math.radians(diff)
+                cos_a = math.cos(-diff_rad) 
+                sin_a = math.sin(-diff_rad) 
+
+                new_dx = dx * cos_a - dy * sin_a
+                new_dy = dx * sin_a + dy * cos_a
+                new_x = mid_point[0] + new_dx
+                new_y = mid_point[1] + new_dy
+                new_length = math.sqrt(new_dx**2 + new_dy**2)
+            else:
+                new_length = length 
+                new_dx = dx
+                new_dy = dy   
+                new_x = end_point[0]  
+                new_y = end_point[1]           
+            if new_length > max_len:
+                scale = max_len / new_length
+                return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
+            return (new_x, new_y)
+        
+        elif statue == 2:
+            if deg < max_deg:
+                diff = deg - max_deg
+                diff_rad = math.radians(diff)
+                cos_a = math.cos(-diff_rad) 
+                sin_a = math.sin(-diff_rad) 
+                
+                new_dx = dx * cos_a - dy * sin_a
+                new_dy = dx * sin_a + dy * cos_a
+                new_x = mid_point[0] + new_dx
+                new_y = mid_point[1] + new_dy
+                new_length = math.sqrt(new_dx**2 + new_dy**2)
+            else:
+                new_length = length 
+                new_dx = dx
+                new_dy = dy  
+                new_x = end_point[0]  
+                new_y = end_point[1] 
+                
+            if new_length > max_len:
+                scale = max_len / new_length
+                return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
+            return (new_x, new_y)
 
     def process_frame(self, frame, preview=True, normalize_for_storage=True):
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
         try:
             list_p, _ = self.predict_frame(frame)
             p_pos = get_keypoints(list_p)
+
+            #增加长度和角度限制
+            #计算角度
+            r_a_a = calculate_angle(p_pos[6],p_pos[8],p_pos[10])
+            l_a_a = calculate_angle(p_pos[5],p_pos[7],p_pos[9]) 
+            r_l_a = calculate_angle(p_pos[12],p_pos[14],p_pos[16])
+            l_l_a = calculate_angle(p_pos[11],p_pos[13],p_pos[15])
+
+            #计算长度，一般都是末端出现跑偏
+            r_a_l = distance(p_pos[8],p_pos[10])
+            l_a_l = distance(p_pos[7],p_pos[9])
+            r_l_l = distance(p_pos[14],p_pos[16])
+            l_l_l = distance(p_pos[13],p_pos[15])
+
+            if 0 <=r_a_a <= 170 and (r_a_l < 150):
+                pass
+            else:
+                p_pos[10] = self.fix_endpoint_by_angle(p_pos[8],p_pos[10],170,r_a_a,150,1)
+
+            if 0 <=l_a_a <= 170 and (l_a_l < 150):
+                pass
+            else:
+                p_pos[9] = self.fix_endpoint_by_angle(p_pos[7],p_pos[9],170,l_a_a,150,1)
+
+            if (180 <=r_l_a <= 360) and (r_l_l < 150) :
+                pass
+            else:
+                p_pos[16] = self.fix_endpoint_by_angle(p_pos[14],p_pos[16],170,r_l_a,150,2)
+
+            if (180 <=l_l_a <= 360) and (l_l_l < 150):
+                pass
+            else:
+                p_pos[15] = self.fix_endpoint_by_angle(p_pos[13],p_pos[15],170,l_l_a,150,2)
+            
+            
 
             if p_pos and len(p_pos) >= 17:
                 validated = []
@@ -373,7 +461,7 @@ class VideoProcessor:
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
         os.makedirs(os.path.join(self.output_dir, "result_video", "video"), exist_ok=True)
         output_path = os.path.join(self.output_dir, "result_video", "video",
-                                   f"yolo_hrnet-{self.video_name}.mp4")
+                                    f"yolo_hrnet-{self.video_name}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, self.VIDEO_FRAME_SPEED, (out_w, out_h))
         if not out.isOpened():

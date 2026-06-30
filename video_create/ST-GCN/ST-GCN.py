@@ -125,7 +125,6 @@ class ContrastiveEncoder(nn.Module):
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
-        # ★★★ 删除全局 self.B ★★★
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
         self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
@@ -144,7 +143,6 @@ class ContrastiveEncoder(nn.Module):
         x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
         x = self.bn(x)
         x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        # ★★★ 调用 block 时只传入 A，不再传入 B ★★★
         x = self.stgc1(x, self.A)
         x = self.stgc2(x, self.A)
         x = self.stgc3(x, self.A)

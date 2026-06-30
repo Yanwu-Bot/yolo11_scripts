@@ -11,8 +11,102 @@ import random
 import time
 from collections import deque
 import matplotlib.pyplot as plt
+from utill import *
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
+
+def fix_endpoint_by_angle(mid_point, end_point, max_deg, deg, max_len, statue):
+    """
+    角度修正函数
+    statue=1: 用于手臂（角度应小于 max_deg）
+    statue=2: 用于腿（角度应大于 max_deg）
+    """
+    dx = end_point[0] - mid_point[0]
+    dy = end_point[1] - mid_point[1]
+    length = math.sqrt(dx**2 + dy**2)
+
+    if statue == 1:
+        if deg > max_deg:
+            diff = deg - max_deg
+            diff_rad = math.radians(diff)
+            cos_a = math.cos(-diff_rad)
+            sin_a = math.sin(-diff_rad)
+            new_dx = dx * cos_a - dy * sin_a
+            new_dy = dx * sin_a + dy * cos_a
+            new_x = mid_point[0] + new_dx
+            new_y = mid_point[1] + new_dy
+            new_length = math.sqrt(new_dx**2 + new_dy**2)
+        else:
+            new_length = length
+            new_dx = dx
+            new_dy = dy
+            new_x = end_point[0]
+            new_y = end_point[1]
+        if new_length > max_len:
+            scale = max_len / new_length
+            return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
+        return (new_x, new_y)
+
+    elif statue == 2:
+        if deg < max_deg:
+            diff = deg - max_deg
+            diff_rad = math.radians(diff)
+            cos_a = math.cos(-diff_rad)
+            sin_a = math.sin(-diff_rad)
+            new_dx = dx * cos_a - dy * sin_a
+            new_dy = dx * sin_a + dy * cos_a
+            new_x = mid_point[0] + new_dx
+            new_y = mid_point[1] + new_dy
+            new_length = math.sqrt(new_dx**2 + new_dy**2)
+        else:
+            new_length = length
+            new_dx = dx
+            new_dy = dy
+            new_x = end_point[0]
+            new_y = end_point[1]
+        if new_length > max_len:
+            scale = max_len / new_length
+            return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
+        return (new_x, new_y)
+
+def _apply_keypoint_fix(p_pos):
+    """对关键点应用角度和距离修正（与HRNet_video.py中process_frame逻辑一致）"""
+    if p_pos is None or len(p_pos) < 17:
+        return p_pos
+
+    p_pos = np.array(p_pos, dtype=np.float32)
+
+    # 计算角度
+    r_a_a = calculate_angle(p_pos[6], p_pos[8], p_pos[10])   # 右臂角度
+    l_a_a = calculate_angle(p_pos[5], p_pos[7], p_pos[9])   # 左臂角度
+    r_l_a = calculate_angle(p_pos[12], p_pos[14], p_pos[16]) # 右腿角度
+    l_l_a = calculate_angle(p_pos[11], p_pos[13], p_pos[15]) # 左腿角度
+
+    # 计算末端长度
+    r_a_l = distance(p_pos[8], p_pos[10])   # 右小臂长度
+    l_a_l = distance(p_pos[7], p_pos[9])    # 左小臂长度
+    r_l_l = distance(p_pos[14], p_pos[16])  # 右小腿长度
+    l_l_l = distance(p_pos[13], p_pos[15])  # 左小腿长度
+
+    # 右臂修正（角度应 ≤170 且长度 <150）
+    if not (0 <= r_a_a <= 170 and r_a_l < 150):
+        p_pos[10] = fix_endpoint_by_angle(p_pos[8], p_pos[10], 170, r_a_a, 150, 1)
+
+    # 左臂修正（角度应 ≤170 且长度 <150）
+    if not (0 <= l_a_a <= 170 and l_a_l < 150):
+        p_pos[9] = fix_endpoint_by_angle(p_pos[7], p_pos[9], 170, l_a_a, 150, 1)
+
+    # 右腿修正（角度应 ≥180 且长度 <150）
+    if not (180 <= r_l_a <= 360 and r_l_l < 150):
+        p_pos[16] = fix_endpoint_by_angle(p_pos[14], p_pos[16], 170, r_l_a, 150, 2)
+
+    # 左腿修正（角度应 ≥180 且长度 <150）
+    if not (180 <= l_l_a <= 360 and l_l_l < 150):
+        p_pos[15] = fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, 150, 2)
+
+    return p_pos
+
+# ==================== 原有代码（不变） ====================
 
 device = None
 hrnet_model = None
@@ -135,6 +229,9 @@ def _extract_video_keypoints(video_path, normalize=True):
         frame_count += 1
         kp = _extract_single_frame_keypoints(frame)
         if kp is not None and len(kp) == 17:
+            # ===== 新增：应用关键点和距离修正（在归一化之前） =====
+            kp = _apply_keypoint_fix(kp)
+            # ====================================================
             if normalize:
                 kp = _normalize_keypoints(kp)
             all_kp.append(kp)

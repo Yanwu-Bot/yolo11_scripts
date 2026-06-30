@@ -14,7 +14,7 @@ import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 8 #窗口大小
-MODEL = 'result/GCN/model/best_8_3.pth'
+MODEL = 'result/GCN/model/best_8_2.pth'
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
@@ -591,7 +591,7 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_11.mp4',
+        test_video='run_14.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.5, "point": 0.3, "displacement": 0.2},

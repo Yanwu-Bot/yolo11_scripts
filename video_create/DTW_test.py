@@ -217,7 +217,7 @@ class VideoScoreEvaluator:
             score = 100 * np.exp(-k * exceed)
         return score
 
-    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=125 , k = 4) -> tuple:
+    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=150 , k = 4) -> tuple:
         body_indices = list(range(5, 17))  # 14个关键点
         test_body = test_points[body_indices]
         template_body = template_points[body_indices]
@@ -371,7 +371,7 @@ class VideoScoreEvaluator:
             self.window_sim_scores = np.array(self.window_sim_scores)/100 #缩放
 
             #最终得分计算，结合相似度
-            alpha = 0.25  # 可调
+            alpha = 0.2  # 可调
             scores = scores * (1 - alpha * (1 - self.window_sim_scores))
             scores = np.delete(scores, -1)
             self.mu = scores.mean()
@@ -550,10 +550,10 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_8.mp4',
+        test_video='run_9.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
-        weight={"fea": 0.5, "point": 0.3, "displacement": 0.2},
+        weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
@@ -561,5 +561,5 @@ if __name__ == '__main__':
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=6)
+    visualize_window(evaluator, window_idx=16)
     evaluator.print_summary()
