@@ -15,6 +15,8 @@ from utill import *
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 
+MAX_LEN = 160
+
 def fix_endpoint_by_angle(mid_point, end_point, max_deg, deg, max_len, statue):
     """
     角度修正函数
@@ -89,20 +91,20 @@ def _apply_keypoint_fix(p_pos):
     l_l_l = distance(p_pos[13], p_pos[15])  # 左小腿长度
 
     # 右臂修正（角度应 ≤170 且长度 <150）
-    if not (0 <= r_a_a <= 170 and r_a_l < 150):
-        p_pos[10] = fix_endpoint_by_angle(p_pos[8], p_pos[10], 170, r_a_a, 150, 1)
+    if not (0 <= r_a_a <= 170 and r_a_l < MAX_LEN):
+        p_pos[10] = fix_endpoint_by_angle(p_pos[8], p_pos[10], 170, r_a_a, MAX_LEN, 1)
 
     # 左臂修正（角度应 ≤170 且长度 <150）
-    if not (0 <= l_a_a <= 170 and l_a_l < 150):
-        p_pos[9] = fix_endpoint_by_angle(p_pos[7], p_pos[9], 170, l_a_a, 150, 1)
+    if not (0 <= l_a_a <= 170 and l_a_l < MAX_LEN):
+        p_pos[9] = fix_endpoint_by_angle(p_pos[7], p_pos[9], 170, l_a_a, MAX_LEN, 1)
 
     # 右腿修正（角度应 ≥180 且长度 <150）
-    if not (180 <= r_l_a <= 360 and r_l_l < 150):
-        p_pos[16] = fix_endpoint_by_angle(p_pos[14], p_pos[16], 170, r_l_a, 150, 2)
+    if not (180 <= r_l_a <= 360 and r_l_l < MAX_LEN):
+        p_pos[16] = fix_endpoint_by_angle(p_pos[14], p_pos[16], 170, r_l_a, MAX_LEN, 2)
 
     # 左腿修正（角度应 ≥180 且长度 <150）
-    if not (180 <= l_l_a <= 360 and l_l_l < 150):
-        p_pos[15] = fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, 150, 2)
+    if not (180 <= l_l_a <= 360 and l_l_l < MAX_LEN):
+        p_pos[15] = fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, MAX_LEN, 2)
 
     return p_pos
 
@@ -312,10 +314,10 @@ if __name__ == '__main__':
     video_folder = 'D:/Dataset/sprint/Whole'
     dataset = ContrastiveWindowDataset(
         video_source=video_folder,
-        window_size=8,
-        stride=2,
+        window_size=7,
+        stride=1,
         normalize=True,
-        save_path='result/GCN/dataset/dataset.npz'
+        save_path='result/GCN/dataset/dataset_7_1.npz'
     )
     # 测试输出形状
     sample = dataset[0]

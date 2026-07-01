@@ -10,7 +10,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_8_2.pth'  #窗口长度，滑动步长
+MODEL_SAVE_N = 'best_7_1.pth'  #窗口长度，滑动步长
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -72,7 +72,6 @@ class STGC_block(nn.Module):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
         self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
-        # ★★★ 每个 block 独立的自学习边偏置 ★★★
         self.B = nn.Parameter(torch.zeros(A_size))         # 自学习边
         self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels),
@@ -83,7 +82,6 @@ class STGC_block(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU()
         )
-    # ★★★ forward 不再接收 B 参数，直接使用 self.B ★★★
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
@@ -119,7 +117,7 @@ class EADM(nn.Module):
         return out
 
 class ContrastiveEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
+    def __init__(self, in_channels=2, t_kernel_size=7, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
@@ -337,10 +335,10 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     plt.show()
 
 if __name__ == '__main__':
-    npz_path = 'result/GCN/dataset/dataset.npz'
+    npz_path = 'result/GCN/dataset/dataset_7_1.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
-        window_size=8,
+        window_size=7,
         transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
                         'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
     )

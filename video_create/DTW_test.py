@@ -13,8 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-WINDOWSIZE = 8 #窗口大小
-MODEL = 'result/GCN/model/best_8_2.pth'
+WINDOWSIZE = 7 #窗口大小
+MODEL = 'result/GCN/model/best_7_1.pth'
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module"""
@@ -112,7 +112,7 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 class ContrastiveEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=9, hop_size=2, output_dim=128):
+    def __init__(self, in_channels=2, t_kernel_size=7, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
@@ -163,7 +163,7 @@ class VideoScoreEvaluator:
         os.makedirs(output_dir, exist_ok=True)
         self.weight = weight if weight else {"fea": 0.5, "point": 0.3, "displacement": 0.2}
         #角度特征
-        self.angle_weights = [1.2] * 24
+        self.angle_weights = [1.2] * 16
         #四肢中心点位置
         self.center_weights = [1] * 8
         #身体前倾角度
@@ -206,7 +206,7 @@ class VideoScoreEvaluator:
         self.template_video_path = os.path.join(self.video_dir, template_video)
         self.test_video_path = os.path.join(self.video_dir, test_video)
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05, k: float = 4) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.075, k: float = 4) -> float:
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
         q_mean = np.sum(q * f_weights)
@@ -550,16 +550,16 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_9.mp4',
+        test_video='run_14.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
-    VIEW_FRAME = 200
+    VIEW_FRAME = 202
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=16)
+    visualize_window(evaluator, window_idx=26)
     evaluator.print_summary()

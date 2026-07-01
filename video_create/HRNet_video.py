@@ -18,7 +18,7 @@ from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 
 class VideoProcessor:
-    VIDEO_FRAME_SPEED = 24
+    VIDEO_FRAME_SPEED = 30
     YOLO_CONF_THRESHOLD = 0.5
     NORMALIZE_TORSO_LENGTH = 100
     STEP_MIN_GAP = 0.2
@@ -265,25 +265,25 @@ class VideoProcessor:
             r_l_l = distance(p_pos[14],p_pos[16])
             l_l_l = distance(p_pos[13],p_pos[15])
 
-            if 0 <=r_a_a <= 170 and (r_a_l < 150):
+            if 0 <=r_a_a <= 170 and (r_a_l < 170):
                 pass
             else:
-                p_pos[10] = self.fix_endpoint_by_angle(p_pos[8],p_pos[10],170,r_a_a,150,1)
+                p_pos[10] = self.fix_endpoint_by_angle(p_pos[8],p_pos[10],170,r_a_a,170,1)
 
-            if 0 <=l_a_a <= 170 and (l_a_l < 150):
+            if 0 <=l_a_a <= 170 and (l_a_l < 170):
                 pass
             else:
-                p_pos[9] = self.fix_endpoint_by_angle(p_pos[7],p_pos[9],170,l_a_a,150,1)
+                p_pos[9] = self.fix_endpoint_by_angle(p_pos[7],p_pos[9],170,l_a_a,170,1)
 
-            if (180 <=r_l_a <= 360) and (r_l_l < 150) :
+            if (180 <=r_l_a <= 360) and (r_l_l < 170) :
                 pass
             else:
-                p_pos[16] = self.fix_endpoint_by_angle(p_pos[14],p_pos[16],170,r_l_a,150,2)
+                p_pos[16] = self.fix_endpoint_by_angle(p_pos[14],p_pos[16],170,r_l_a,170,2)
 
-            if (180 <=l_l_a <= 360) and (l_l_l < 150):
+            if (180 <=l_l_a <= 360) and (l_l_l < 170):
                 pass
             else:
-                p_pos[15] = self.fix_endpoint_by_angle(p_pos[13],p_pos[15],170,l_l_a,150,2)
+                p_pos[15] = self.fix_endpoint_by_angle(p_pos[13],p_pos[15],170,l_l_a,170,2)
             
             
 
@@ -500,7 +500,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'D:/Dataset/sprint/Whole/run_8.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_13.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()
