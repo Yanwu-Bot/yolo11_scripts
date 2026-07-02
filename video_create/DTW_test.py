@@ -14,7 +14,7 @@ import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 7 #窗口大小
-MODEL = 'result/GCN/model/best_7_1.pth'
+MODEL = 'result/GCN/model/best_7_1_100_128.pth'
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module"""
@@ -163,7 +163,7 @@ class VideoScoreEvaluator:
         os.makedirs(output_dir, exist_ok=True)
         self.weight = weight if weight else {"fea": 0.5, "point": 0.3, "displacement": 0.2}
         #角度特征
-        self.angle_weights = [1.2] * 16
+        self.angle_weights = [1.6] * 4 + [1.2] * 4 + [1.3] * 4 + [1] * 4
         #四肢中心点位置
         self.center_weights = [1] * 8
         #身体前倾角度
@@ -550,16 +550,16 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_14.mp4',
+        test_video='run_2.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
-    VIEW_FRAME = 202
+    VIEW_FRAME = 203
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=26)
+    visualize_window(evaluator, window_idx=17)
     evaluator.print_summary()

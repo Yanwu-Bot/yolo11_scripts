@@ -500,7 +500,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'D:/Dataset/sprint/Whole/run_13.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_2.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

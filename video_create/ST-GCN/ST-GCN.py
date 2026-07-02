@@ -1,4 +1,5 @@
 # ST-GCN.py（自学习边修正版）
+import time
 import os
 import math
 import random
@@ -10,7 +11,17 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_7_1.pth'  #窗口长度，滑动步长
+MODEL_SAVE_N = 'best_7_1_100_128.pth'  #窗口长度，滑动步长
+
+def show_time(start_time,current_time):
+    start_time = time.localtime(start_time)
+    current_time = time.localtime(current_time)
+    tm_hour = current_time.tm_hour - start_time.tm_hour 
+    tm_min = current_time.tm_min - start_time.tm_min  
+    tm_sec = current_time.tm_sec - start_time.tm_sec 
+    time_string = f"{tm_hour}时{tm_min}分{tm_sec}秒"
+    return time_string
+
 class COCOGraph:
     # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
@@ -215,7 +226,7 @@ class ContrastiveDatasetFromFile(Dataset):
                 w = w[::-1].copy()
         if 'GB' in self.transform_params and self.transform_params['GB'] > 0:
             if random.random() < self.transform_params['GB']:
-                sigma = random.uniform(0.3, 1.0)
+                sigma = random.uniform(0.3, 0.7)
                 radius = int(4 * sigma + 0.5)
                 max_radius = (T - 1) // 2
                 if radius > max_radius:
@@ -335,11 +346,14 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     plt.show()
 
 if __name__ == '__main__':
+    start_time = time.time()
     npz_path = 'result/GCN/dataset/dataset_7_1.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
         window_size=7,
-        transform_params={'rotation':15, 'scale':0.2, 'noise':0.05, 'mask':0.2,
-                        'reverse':0.3, 'GB':0.4, 'shear':0.1, 'flip':0.3, 'delete':0.2}
+        transform_params={'rotation':10, 'scale':0.15, 'noise':0.05, 'mask':0.1,
+                        'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
     train_contrastive(dataset, epochs=100, batch_size=64, lr=0.001, temperature=0.07)
+    elapsed = show_time(start_time, time.time())
+    print(f"Total time: {elapsed}")
