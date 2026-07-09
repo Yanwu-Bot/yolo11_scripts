@@ -1,4 +1,4 @@
-# ST-GCN.py（自学习边修正版）
+#增加了batch间距离过滤的ST-GCN与ST-GCN其他无异
 import time
 import os
 import math
@@ -11,7 +11,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
 
-MODEL_SAVE_N = 'best_7_1.pth'  #窗口长度，滑动步长
+MODEL_SAVE_N = 'best_7_1_f.pth'
 
 def show_time(start_time,current_time):
     start_time = time.localtime(start_time)
@@ -23,7 +23,6 @@ def show_time(start_time,current_time):
     return time_string
 
 class COCOGraph:
-    # ... 保持不变（同原代码） ...
     def __init__(self, hop_size=2):
         self.num_node = 17
         self.hop_size = hop_size
@@ -82,8 +81,8 @@ class STGC_block(nn.Module):
     def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.3):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
-        self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
-        self.B = nn.Parameter(torch.zeros(A_size))         # 自学习边
+        self.M = nn.Parameter(torch.ones(A_size))
+        self.B = nn.Parameter(torch.zeros(A_size))
         self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
@@ -97,7 +96,6 @@ class STGC_block(nn.Module):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
 class EADM(nn.Module):
-    """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
         super().__init__()
         self.drop_ratio = drop_ratio
@@ -141,7 +139,6 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # self.eadm = EADM(drop_ratio=0.2)
         self.projection = nn.Sequential(
             nn.Linear(64, 64),
             nn.ReLU(),
@@ -158,13 +155,11 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
-        # x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-# 损失函数等后续代码完全不变
-def nt_xent_loss(z1, z2, temperature=0.5):
+def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None, threshold=0.0):
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
@@ -173,6 +168,31 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     for i in range(batch_size):
         pos_mask[i, i+batch_size] = True
         pos_mask[i+batch_size, i] = True
+
+    if threshold > 0 and raw_windows is not None and batch_indices is not None:
+        cur_raw = raw_windows[batch_indices]  # (B, T, V, 2)
+        # 计算原始窗口间距离矩阵 (B, B)
+        dists = np.zeros((batch_size, batch_size), dtype=np.float32)
+        for i in range(batch_size):
+            w_i = cur_raw[i]
+            for j in range(i+1, batch_size):
+                w_j = cur_raw[j]
+                diff = np.linalg.norm(w_i - w_j, axis=-1)
+                d = np.mean(diff)
+                dists[i, j] = d
+                dists[j, i] = d
+
+        # 扩展为 (2B, 2B) 与 sim 形状一致
+        full_dists = np.zeros((2*batch_size, 2*batch_size), dtype=np.float32)
+        full_dists[:batch_size, :batch_size] = dists
+        full_dists[:batch_size, batch_size:] = dists
+        full_dists[batch_size:, :batch_size] = dists
+        full_dists[batch_size:, batch_size:] = dists
+
+        invalid_neg_mask = (full_dists < threshold) & (~pos_mask.cpu().numpy())
+        invalid = torch.tensor(invalid_neg_mask, device=sim.device)
+        sim[invalid] = -1e9
+
     sim = sim[~mask].view(2*batch_size, -1)
     pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
     neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
@@ -184,7 +204,11 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
     loss = F.cross_entropy(logits, labels)
     pos_avg = pos_sim_raw.mean().item()
-    neg_avg = neg_sim_raw.mean().item()
+    neg_valid = neg_sim_raw[neg_sim_raw > -1e8]
+    if neg_valid.numel() > 0:
+        neg_avg = neg_valid.mean().item()
+    else:
+        neg_avg = 0.0
     diff = pos_avg - neg_avg
     return loss, pos_avg, neg_avg, diff
 
@@ -276,9 +300,9 @@ class ContrastiveDatasetFromFile(Dataset):
         positive = self._random_transform(anchor)
         def to_stgcn(data):
             return torch.FloatTensor(data).permute(2, 0, 1)
-        return to_stgcn(anchor), to_stgcn(positive)
+        return to_stgcn(anchor), to_stgcn(positive), idx
 
-def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5):
+def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5, diversity_threshold=0.0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ContrastiveEncoder(output_dim=64).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -291,6 +315,8 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     neg_history = []
     diff_history = []
 
+    raw_windows = dataset.windows
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -298,12 +324,18 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         total_neg = 0.0
         total_diff = 0.0
         num_batches = 0
-        for anchor, positive in loader:
+        for anchor, positive, indices in loader:
             anchor = anchor.to(device)
             positive = positive.to(device)
+            batch_indices = indices.tolist()
             z1 = model(anchor)
             z2 = model(positive)
-            loss, pos_avg, neg_avg, diff = nt_xent_loss(z1, z2, temperature)
+            loss, pos_avg, neg_avg, diff = nt_xent_loss(
+                z1, z2, temperature,
+                raw_windows=raw_windows,
+                batch_indices=batch_indices,
+                threshold=diversity_threshold
+            )
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -354,6 +386,6 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.15, 'noise':0.05, 'mask':0.1,
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
-    train_contrastive(dataset, epochs=100, batch_size=64, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=100, batch_size=64, lr=0.001, temperature=0.1, diversity_threshold=25)
     elapsed = show_time(start_time, time.time())
     print(f"Total time: {elapsed}")

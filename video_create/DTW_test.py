@@ -14,7 +14,7 @@ import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 7 #窗口大小
-MODEL = 'result/GCN/model/best_7_1_100_128.pth'
+MODEL = 'result/GCN/model/best_7_1_f.pth'
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module"""
@@ -127,9 +127,9 @@ class ContrastiveEncoder(nn.Module):
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         # self.eadm = EADM(drop_ratio=0.2)
         self.projection = nn.Sequential(
-            nn.Linear(64, 128),
+            nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(128, output_dim)
+            nn.Linear(64, output_dim)
         )
     def forward(self, x):
         N, C, T, V = x.size()
@@ -324,7 +324,7 @@ class VideoScoreEvaluator:
         # 窗口聚合
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = ContrastiveEncoder(output_dim=128).to(device)
+            model = ContrastiveEncoder(output_dim=64).to(device)
             model.load_state_dict(torch.load(MODEL, map_location=device))
             scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
             self.window_sim_scores = scores # 记录窗口相似度得分
@@ -550,7 +550,7 @@ def visualize_window(evaluator, window_idx):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_2.mp4',
+        test_video='run_6.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
@@ -561,5 +561,5 @@ if __name__ == '__main__':
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=17)
+    visualize_window(evaluator, window_idx=23)
     evaluator.print_summary()

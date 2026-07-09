@@ -56,13 +56,11 @@ class Feature:
             calculate_angle_180(self.neck, self.l_shoulder, self.l_elbow),
             calculate_angle_180(self.neck, self.r_shoulder, self.r_hand),
             calculate_angle_180(self.neck, self.l_shoulder, self.l_hand),
-
             #腿部
             calculate_angle_180(self.hip_center, self.r_hip, self.r_knee),
             calculate_angle_180(self.hip_center, self.l_hip, self.l_knee),
             calculate_angle_180(self.hip_center, self.r_hip, self.r_foot),
             calculate_angle_180(self.hip_center, self.l_hip, self.l_foot),
-
             #关节角
             calculate_angle_180(self.l_shoulder, self.l_elbow, self.l_hand),
             calculate_angle_180(self.r_shoulder, self.r_elbow, self.r_hand),

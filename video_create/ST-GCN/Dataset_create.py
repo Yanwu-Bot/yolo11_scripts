@@ -15,7 +15,7 @@ from utill import *
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 
-MAX_LEN = 160
+MAX_LEN = 170
 
 def fix_endpoint_by_angle(mid_point, end_point, max_deg, deg, max_len, statue):
     """
@@ -72,7 +72,7 @@ def fix_endpoint_by_angle(mid_point, end_point, max_deg, deg, max_len, statue):
         return (new_x, new_y)
 
 def _apply_keypoint_fix(p_pos):
-    """对关键点应用角度和距离修正（与HRNet_video.py中process_frame逻辑一致）"""
+    """对关键点应用角度和距离修正"""
     if p_pos is None or len(p_pos) < 17:
         return p_pos
 
@@ -107,8 +107,6 @@ def _apply_keypoint_fix(p_pos):
         p_pos[15] = fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, MAX_LEN, 2)
 
     return p_pos
-
-# ==================== 原有代码（不变） ====================
 
 device = None
 hrnet_model = None
