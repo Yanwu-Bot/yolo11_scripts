@@ -79,11 +79,7 @@ class Feature:
         return normalized_angles
                 
     def get_center(self):
-        """
-        获取基于脊柱长度归一化的中心点坐标
-        返回: 8个归一化后的数值 [x1,y1,x2,y2,x3,y3,x4,y4]
-        范围：通常在[-3, 3]之间，使用tanh压缩到[-1, 1]
-        """
+
         try:
             # 计算原始中心点
             center1 = self.get_main_center([self.r_elbow, self.r_hand, self.r_shoulder])
@@ -91,28 +87,19 @@ class Feature:
             center3 = self.get_main_center([self.l_hip, self.l_knee, self.l_foot])
             center4 = self.get_main_center([self.r_hip, self.r_knee, self.r_foot])
             
-            # 获取脊柱长度和参考点
-            spine_length = self.spine_width
-            if spine_length == 0:
-                return [0.0] * 8
-            
-            # 使用脖子作为参考点
-            ref_x, ref_y = self.neck[0], self.neck[1]
-            
-            # 归一化所有中心点，并用tanh压缩到[-1, 1]
             normalized = []
+            angle_list = []
             for center in [center1, center2, center3, center4]:
-                rel_x = (center[0] - ref_x) / spine_length
-                rel_y = (center[1] - ref_y) / spine_length
-                # 使用tanh压缩，避免极端值影响
-                # tanh(3) ≈ 0.995，所以[-3,3]范围内的值会被映射到[-0.995, 0.995]
-                normalized.extend([np.tanh(rel_x), np.tanh(rel_y)])
-            
+                ang = calculate_angle_180(self.neck,self.hip_center,center)
+                angle_list.append(ang)
+
+            MAX_ANGLE = 180.0
+            normalized = [min(a / MAX_ANGLE,1) for a in angle_list]
             return normalized
             
         except Exception as e:
             print(f"get_normalized_center错误: {e}")
-            return [0.0] * 8
+            return [0.0] * 4
 
     def get_beta_features(self):
         """
@@ -122,8 +109,8 @@ class Feature:
         betas = []
         # β₁: 身体前倾角度，除以90归一化到[0, 1]
         vertical_point = [self.neck[0], self.neck[1] + 100]
-        beta1 = calculate_angle(vertical_point, self.neck, self.hip_center)
-        betas.append(min(beta1 / 90.0, 1.0))  # 0-90度 → 0-1
+        beta1 = calculate_angle(vertical_point, self.hip_center, self.neck)
+        betas.append(beta1 / 90.0)  
         
         # β₂: 两脚间距离，用脊柱归一化，然后压缩到[0, 1]
         dx = self.l_foot[0] - self.r_foot[0]
@@ -152,8 +139,7 @@ class Feature:
         right_arm_norm = right_arm_phase / spine_len
         left_leg_norm = left_leg_phase / spine_len
         right_leg_norm = right_leg_phase / spine_len
-        
-        # 用tanh压缩到[-1, 1]，假设相对位移通常在[-2, 2]范围内
+
         gamma = [
             np.tanh(left_arm_norm),
             np.tanh(right_arm_norm),

@@ -5,6 +5,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import os
 from fastdtw import fastdtw
+from dtaidistance import dtw_ndim
 from scipy.spatial.distance import euclidean
 from matplotlib import rcParams
 import math
@@ -14,7 +15,7 @@ import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 7 #窗口大小
-MODEL = 'result/GCN/model/best_7_1_f.pth'
+MODEL = 'result/GCN/model/best_7_1.pth'
 
 class EADM(nn.Module):
     """Energy-based Attention-guided Drop Module"""
@@ -112,7 +113,7 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 class ContrastiveEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=7, hop_size=2, output_dim=128):
+    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
@@ -165,7 +166,7 @@ class VideoScoreEvaluator:
         #角度特征
         self.angle_weights = [1.6] * 4 + [1.2] * 4 + [1.3] * 4 + [1] * 4
         #四肢中心点位置
-        self.center_weights = [1] * 8
+        self.center_weights = [1] * 4
         #身体前倾角度
         self.orientation_weight = [1.1]
         #两脚间距
@@ -240,7 +241,8 @@ class VideoScoreEvaluator:
         return mu
 
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> np.ndarray:
-        distance, path = fastdtw(test_features, template_features, dist=euclidean)
+        #dis,path = fastdtw(test_features, template_features, dist=euclidean)
+        path = dtw_ndim.warping_path(test_features, template_features, window=30)
         path = np.array(path)
         self.path = path
         print(f"DTW对齐完成: 路径长度 = {len(path)}")
@@ -547,19 +549,35 @@ def visualize_window(evaluator, window_idx):
     cap_t.release()
     cap_test.release()
 
+def visualize_dtw_path(evaluator):
+    if evaluator.path is None:
+        print("没有对齐数据")
+        return
+    path = np.array(evaluator.path)
+    plt.figure(figsize=(8, 8))
+    plt.plot(path[:, 0], path[:, 1], 'b-', lw=1.5, label='DTW路径')
+    plt.plot([0, path[-1, 0]], [0, path[-1, 1]], 'k--', alpha=0.6, label='对角线')
+    plt.xlabel('测试帧索引')
+    plt.ylabel('模板帧索引')
+    plt.title('DTW 对齐路径')
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.show()
+
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_6.mp4',
+        test_video='run_14.mp4',
         features_dir='result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     evaluator.score_video()
+    visualize_dtw_path(evaluator) 
     VIEW_FRAME = 203
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=23)
+    visualize_window(evaluator, window_idx=1)
     evaluator.print_summary()

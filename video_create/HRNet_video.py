@@ -369,7 +369,7 @@ class VideoProcessor:
 
             if not p_pos or len(p_pos) < 17:
                 keypoint_prev = None
-                self.all_features.append(np.zeros(50, dtype=np.float32))
+                self.all_features.append(np.zeros(26, dtype=np.float32))
                 self.vector_list.append(np.zeros((17,2), dtype=np.float32))
                 continue
 
@@ -419,7 +419,7 @@ class VideoProcessor:
                 feat = feature.get_all_features()
                 self.all_features.append(np.array(feat, dtype=np.float32))
             else:
-                self.all_features.append(np.zeros(50, dtype=np.float32))
+                self.all_features.append(np.zeros(26, dtype=np.float32))
 
             if self.vector_list:
                 self.vector_list.append(self.vector_list[-1].copy())
@@ -500,7 +500,7 @@ class VideoProcessor:
             print()
 
 if __name__ == '__main__':
-    input_path = 'D:/Dataset/sprint/Whole/run_3.mp4'
+    input_path = 'D:/Dataset/sprint/Whole/run_14.mp4'
     processor = VideoProcessor(input_path)
     start = time.time()
     processor.generate_video()

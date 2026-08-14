@@ -128,7 +128,7 @@ class EADM(nn.Module):
         return out
 
 class ContrastiveEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=7, hop_size=2, output_dim=128):
+    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
@@ -189,7 +189,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     return loss, pos_avg, neg_avg, diff
 
 class ContrastiveDatasetFromFile(Dataset):
-    def __init__(self, npz_path, window_size=6, transform_params=None):
+    def __init__(self, npz_path, window_size=7, transform_params=None):
         data = np.load(npz_path, allow_pickle=True)
         self.windows = data['windows']
         self.window_size = window_size
@@ -327,6 +327,12 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             torch.save(model.state_dict(), os.path.join(save_dir, MODEL_SAVE_N))
             print(f"  -> 保存最佳模型，loss={avg_loss:.6f}")
     print("训练完成")
+    from thop import profile, clever_format
+    model.eval()
+    dummy = torch.randn(1, 2, 7, 17).to(device)
+    flops, params = profile(model, inputs=(dummy,), verbose=False)
+    flops_f, params_f = clever_format([flops, params], "%.3f")
+    print(f"参数量: {params_f} | FLOPs: {flops_f}")
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     ax1.plot(loss_history, color='black')
@@ -354,6 +360,6 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.15, 'noise':0.05, 'mask':0.1,
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
-    train_contrastive(dataset, epochs=100, batch_size=64, lr=0.001, temperature=0.1)
+    train_contrastive(dataset, epochs=100, batch_size=128, lr=0.001, temperature=0.2)
     elapsed = show_time(start_time, time.time())
     print(f"Total time: {elapsed}")
