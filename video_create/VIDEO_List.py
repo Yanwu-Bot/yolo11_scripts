@@ -1,3 +1,5 @@
+#批量处理视频
+
 import math
 import os
 import json
@@ -14,7 +16,6 @@ from ultralytics import YOLO
 from Feature import *
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
-
 
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 30
@@ -59,7 +60,7 @@ class VideoProcessor:
         if VideoProcessor._shared_models is None:
             VideoProcessor._shared_models = self._load_models()
         (self.device, self.yolo_model, self.hrnet_model,
-         self.person_info, self.hrnet_transform) = VideoProcessor._shared_models
+        self.person_info, self.hrnet_transform) = VideoProcessor._shared_models
         return self.device is not None
 
     def _load_models(self):
@@ -271,7 +272,6 @@ class VideoProcessor:
             # 关键：先检查 p_pos 是否有效，再做角度/长度计算，避免索引越界
             if not p_pos or len(p_pos) < 17:
                 return _no_person(cv2.resize(frame, (out_w, out_h)))
-
             # 增加长度和角度限制
             # 计算角度
             r_a_a = calculate_angle(p_pos[6], p_pos[8], p_pos[10])
@@ -450,7 +450,7 @@ class VideoProcessor:
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
         os.makedirs(os.path.join(self.output_dir, "result_video", "video"), exist_ok=True)
         output_path = os.path.join(self.output_dir, "result_video", "video",
-                                   f"yolo_hrnet-{self.video_name}.mp4")
+                                    f"yolo_hrnet-{self.video_name}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, self.VIDEO_FRAME_SPEED, (out_w, out_h))
         if not out.isOpened():
@@ -488,20 +488,16 @@ class VideoProcessor:
         if current == total:
             print()
 
-
 if __name__ == '__main__':
     input_dir = 'D:/Dataset/sprint/Whole'       # 输入文件夹
     output_dir = 'D:/Dataset/sprint/result'     # 统一输出文件夹
     SHOW_VIDEO = False                          # True=显示预览窗口，False=不显示
-
     exts = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv')
-
     videos = [os.path.join(input_dir, f) for f in sorted(os.listdir(input_dir))
-              if f.lower().endswith(exts)]
+            if f.lower().endswith(exts)]
     if not videos:
         print("未找到视频文件:", input_dir)
         sys.exit(1)
-
     os.makedirs(output_dir, exist_ok=True)
     print(f"共找到 {len(videos)} 个视频，统一输出到: {output_dir}")
     total_start = time.time()

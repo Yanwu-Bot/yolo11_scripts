@@ -9,12 +9,6 @@ class Feature:
         '''
         self.neck = [(p_pos[5][0] + p_pos[6][0])/2, (p_pos[5][1] + p_pos[6][1])/2]                 #脖颈
         self.hip_center = [(p_pos[11][0] + p_pos[12][0])/2, (p_pos[11][1] + p_pos[12][1])/2]       #髋中心
-        self.thorax = [(self.neck[0] + self.hip_center[0])/2, (self.neck[1] + self.hip_center[1])/2]  #躯干中心
-        self.nose = p_pos[0]                              #鼻子
-        self.l_eye = p_pos[1]                             #左眼
-        self.r_eye = p_pos[2]                             #右眼
-        self.l_ear = p_pos[3]                             #左耳
-        self.r_ear = p_pos[4]                             #右耳
         self.l_shoulder = p_pos[5]                        #左肩
         self.r_shoulder = p_pos[6]                        #右肩
         self.l_elbow = p_pos[7]                           #左肘
@@ -28,11 +22,7 @@ class Feature:
         self.l_foot = p_pos[15]                           #左脚
         self.r_foot = p_pos[16]                           #右脚
         
-        shoulder_vec = np.array(self.r_shoulder) - np.array(self.l_shoulder)
-        self.shoulder_width = float(np.linalg.norm(shoulder_vec))
-        self.spine_vec = np.array(self.hip_center) - np.array(self.neck)
-        self.spine_width = float(np.linalg.norm(self.spine_vec))
-        self.front_vec = np.array([0, 1])  # 假设Y轴向前
+        self.spine_width = float(np.linalg.norm(np.array(self.hip_center) - np.array(self.neck)))
 
     #获取中心点
     def get_main_center(self, point_list):
@@ -41,10 +31,7 @@ class Feature:
         for pair in point_list:
             x_sum += pair[0]
             y_sum += pair[1]
-        x_avg = x_sum/len(point_list)
-        y_avg = y_sum/len(point_list)
-        point = [x_avg, y_avg]
-        return point
+        return [x_sum/len(point_list), y_sum/len(point_list)]
     
     def get_part_angle(self):
         """
@@ -66,37 +53,22 @@ class Feature:
             calculate_angle_180(self.r_shoulder, self.r_elbow, self.r_hand),
             calculate_angle_180(self.r_hip, self.r_knee, self.r_foot),
             calculate_angle_180(self.l_hip, self.l_knee, self.l_foot),
-
             calculate_angle_180(self.r_elbow, self.r_shoulder, self.r_hand),
             calculate_angle_180(self.l_elbow, self.l_shoulder, self.l_hand),
             calculate_angle_180(self.r_knee, self.r_hip, self.r_foot),
             calculate_angle_180(self.l_knee, self.l_hip, self.l_foot),
         ]
-        
-        MAX_ANGLE = 180.0
-        normalized_angles = [min(a / MAX_ANGLE,1) for a in angle_list]
-        
-        return normalized_angles
+        return [min(a / 180.0, 1.0) for a in angle_list]
                 
     def get_center(self):
-
         try:
-            # 计算原始中心点
-            center1 = self.get_main_center([self.r_elbow, self.r_hand, self.r_shoulder])
-            center2 = self.get_main_center([self.l_elbow, self.l_hand, self.l_shoulder])
-            center3 = self.get_main_center([self.l_hip, self.l_knee, self.l_foot])
-            center4 = self.get_main_center([self.r_hip, self.r_knee, self.r_foot])
-            
-            normalized = []
-            angle_list = []
-            for center in [center1, center2, center3, center4]:
-                ang = calculate_angle_180(self.neck,self.hip_center,center)
-                angle_list.append(ang)
-
-            MAX_ANGLE = 180.0
-            normalized = [min(a / MAX_ANGLE,1) for a in angle_list]
-            return normalized
-            
+            centers = [
+                self.get_main_center([self.r_elbow, self.r_hand, self.r_shoulder]),
+                self.get_main_center([self.l_elbow, self.l_hand, self.l_shoulder]),
+                self.get_main_center([self.l_hip, self.l_knee, self.l_foot]),
+                self.get_main_center([self.r_hip, self.r_knee, self.r_foot]),
+            ]
+            return [min(calculate_angle_180(self.neck, self.hip_center, c) / 180.0, 1.0) for c in centers]
         except Exception as e:
             print(f"get_normalized_center错误: {e}")
             return [0.0] * 4
@@ -106,55 +78,33 @@ class Feature:
         2维身体朝向特征
         返回: [β₁, β₂] 列表，范围都在[0, 1]
         """
-        betas = []
-        # β₁: 身体前倾角度，除以90归一化到[0, 1]
+        # β₁: 身体前倾角度，除以90并裁剪到[0, 1]
         vertical_point = [self.neck[0], self.neck[1] + 100]
         beta1 = calculate_angle(vertical_point, self.hip_center, self.neck)
-        betas.append(beta1 / 90.0)  
+        beta1 = min(max(beta1 / 90.0, 0.0), 1.0)
         
-        # β₂: 两脚间距离，用脊柱归一化，然后压缩到[0, 1]
+        # β₂: 两脚间距离，用脊柱归一化后tanh压缩到[0, 1)
         dx = self.l_foot[0] - self.r_foot[0]
         dy = self.l_foot[1] - self.r_foot[1]
         foot_dist = (dx*dx + dy*dy) ** 0.5
-        beta2_raw = foot_dist / (self.spine_width + 1e-6)
-        # 假设最大步宽不会超过脊柱长度的2倍，使用tanh压缩
-        betas.append(np.tanh(beta2_raw / 2.0))  # 映射到[0, 1)
+        beta2 = np.tanh(foot_dist / (self.spine_width + 1e-6) / 2.0)
         
-        return betas
+        return [beta1, beta2]
 
     def get_gamma_features(self):
         """
         跑步专用的4维对侧协调特征
         返回: [γ₁, γ₂, γ₃, γ₄] 列表，范围在[-1, 1]
         """
-        # 计算四肢相对于躯干的位移（像素单位）
-        left_arm_phase = self.l_hand[0] - self.l_shoulder[0]
-        right_arm_phase = self.r_hand[0] - self.r_shoulder[0]
-        left_leg_phase = self.l_foot[0] - self.l_hip[0]
-        right_leg_phase = self.r_foot[0] - self.r_hip[0]
-        
         spine_len = self.spine_width + 1e-6
-        
-        left_arm_norm = left_arm_phase / spine_len
-        right_arm_norm = right_arm_phase / spine_len
-        left_leg_norm = left_leg_phase / spine_len
-        right_leg_norm = right_leg_phase / spine_len
-
         gamma = [
-            np.tanh(left_arm_norm),
-            np.tanh(right_arm_norm),
-            np.tanh(left_leg_norm),
-            np.tanh(right_leg_norm)
+            np.tanh((self.l_hand[0] - self.l_shoulder[0]) / spine_len),
+            np.tanh((self.r_hand[0] - self.r_shoulder[0]) / spine_len),
+            np.tanh((self.l_foot[0] - self.l_hip[0]) / spine_len),
+            np.tanh((self.r_foot[0] - self.r_hip[0]) / spine_len),
         ]
-        
-        return gamma
+        return [(g + 1.0) / 2.0 for g in gamma]
     
     def get_all_features(self):
-
-        part_angles = self.get_part_angle()   
-        center = self.get_center()            
-        beta = self.get_beta_features()       
-        gamma = self.get_gamma_features()     
-        
-        all_features = part_angles + center + beta + gamma
-        return all_features
+        return (self.get_part_angle() + self.get_center() +
+                self.get_beta_features() + self.get_gamma_features())

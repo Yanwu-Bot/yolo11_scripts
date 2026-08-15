@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-WINDOWSIZE = 7 #窗口大小
+WINDOWSIZE = 6 #窗口大小
 MODEL = 'result/GCN/model/best_7_1.pth'
 
 class EADM(nn.Module):
@@ -242,7 +242,7 @@ class VideoScoreEvaluator:
 
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> np.ndarray:
         #dis,path = fastdtw(test_features, template_features, dist=euclidean)
-        path = dtw_ndim.warping_path(test_features, template_features, window=30)
+        path = dtw_ndim.warping_path(test_features, template_features, window=20)
         path = np.array(path)
         self.path = path
         print(f"DTW对齐完成: 路径长度 = {len(path)}")
@@ -567,8 +567,8 @@ def visualize_dtw_path(evaluator):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_14.mp4',
-        features_dir='result/features',
+        test_video='run_7.mp4',
+        features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
