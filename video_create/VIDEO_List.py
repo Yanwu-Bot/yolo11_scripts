@@ -111,7 +111,7 @@ class VideoProcessor:
                 area = (x2 - x1) * (y2 - y1)
                 if area < min_area:
                     continue
-                score = conf * area
+                score = conf * area #置信度*面积作为最终判断依据
                 persons.append(([float(x1), float(y1), float(x2), float(y2)], conf, area, score))
         if not persons:
             return None, 0
@@ -148,7 +148,7 @@ class VideoProcessor:
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
         cv2.putText(frame, f"Person: {conf:.2f}", (int(x1), max(20, int(y1)-10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
+        #裁剪后的检测区域
         roi_x1 = max(0, int(x1) - self.padding)
         roi_y1 = max(0, int(y1) - self.padding)
         roi_x2 = min(w, int(x2) + self.padding)
@@ -269,7 +269,6 @@ class VideoProcessor:
             list_p, _ = self.predict_frame(frame)
             p_pos = get_keypoints(list_p)
 
-            # 关键：先检查 p_pos 是否有效，再做角度/长度计算，避免索引越界
             if not p_pos or len(p_pos) < 17:
                 return _no_person(cv2.resize(frame, (out_w, out_h)))
             # 增加长度和角度限制
@@ -305,7 +304,6 @@ class VideoProcessor:
             else:
                 p_pos[15] = self.fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, 170, 2)
 
-            # 校验元素格式（角度修正后可能变成 tuple）
             validated = []
             for pt in p_pos:
                 if isinstance(pt, (list, tuple)) and len(pt) == 2:
@@ -326,11 +324,10 @@ class VideoProcessor:
                     scale_info = {'scale': scale, 'torso_length': torso_len, 'center': center}
                 else:
                     norm_data = None
-
+            #绘制关键点
             draw_points = [[p[0], p[1], 1.0] for p in p_pos]
             draw = Draw(frame, [draw_points])
             draw.draw_select()
-
             output_frame = cv2.resize(frame, (out_w, out_h))
 
             if preview:
@@ -503,6 +500,7 @@ if __name__ == '__main__':
     total_start = time.time()
 
     for i, video_path in enumerate(videos, 1):
+        #进度
         print(f"\n[{i}/{len(videos)}] 处理: {os.path.basename(video_path)}")
         processor = VideoProcessor(video_path, output_dir=output_dir, show_video=SHOW_VIDEO)
         start = time.time()

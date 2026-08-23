@@ -1,3 +1,4 @@
+#可用
 import math
 import os
 import json
@@ -6,6 +7,7 @@ import numpy as np
 import cv2
 import sys
 import time
+from collections import deque
 from HRNet_model import HighResolutionNet
 import transforms
 from utill import *
@@ -15,7 +17,6 @@ from Feature import *
 from matplotlib import rcParams
 rcParams['font.family'] = 'SimHei'
 
-
 class VideoProcessor:
     VIDEO_FRAME_SPEED = 30
     YOLO_CONF_THRESHOLD = 0.5
@@ -23,13 +24,14 @@ class VideoProcessor:
     STEP_MIN_GAP = 0.2
     OUTPUT_VIDEO_SIZE = (1280, 720)
 
-    _shared_models = None   # 所有实例共享，模型只加载一次
-
-    def __init__(self, input_path, output_dir="result", show_video=False):
+    def __init__(self, input_path):
         self.input_path = input_path
         self.video_name = os.path.splitext(os.path.basename(input_path))[0]
-        self.output_dir = output_dir
-        self.show_video = show_video      # True=显示预览窗口，False=不显示
+        self.output_dir = "result"
+        self.trajectory_tracker = KeypointTrajectoryTracker(
+            num_keypoints=17, history_length=200,
+            output_dir=os.path.join(self.output_dir, "track_img")
+        )
 
         self.device = None
         self.hrnet_model = None
@@ -44,6 +46,7 @@ class VideoProcessor:
         self.last_roi = None
 
         self.vector_list = []
+        self.max_acc = []
         self.all_features = []
 
         self.step_state = 0
@@ -56,38 +59,31 @@ class VideoProcessor:
     def init_models(self):
         if self.device is not None:
             return True
-        if VideoProcessor._shared_models is None:
-            VideoProcessor._shared_models = self._load_models()
-        (self.device, self.yolo_model, self.hrnet_model,
-         self.person_info, self.hrnet_transform) = VideoProcessor._shared_models
-        return self.device is not None
-
-    def _load_models(self):
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         try:
-            yolo_model = YOLO('weights/yolo11n.pt')
-            hrnet_model = HighResolutionNet(base_channel=32)
+            self.yolo_model = YOLO('weights/yolo11n.pt')
+            self.hrnet_model = HighResolutionNet(base_channel=32)
             weights_path = "HRnet/pytorch/pose_coco/pose_hrnet_w32_256x192.pth"
             keypoint_json_path = "HRnet/person_keypoints.json"
             if not os.path.exists(weights_path) or not os.path.exists(keypoint_json_path):
                 raise FileNotFoundError("HRNet weights / keypoint json not found")
             with open(keypoint_json_path, "r") as f:
-                person_info = json.load(f)
-            weights = torch.load(weights_path, map_location=device)
+                self.person_info = json.load(f)
+            weights = torch.load(weights_path, map_location=self.device)
             weights = weights if "model" not in weights else weights["model"]
-            hrnet_model.load_state_dict(weights)
-            hrnet_model.to(device)
-            hrnet_model.eval()
+            self.hrnet_model.load_state_dict(weights)
+            self.hrnet_model.to(self.device)
+            self.hrnet_model.eval()
             resize_hw = (256, 192)
-            hrnet_transform = transforms.Compose([
+            self.hrnet_transform = transforms.Compose([
                 transforms.AffineTransform(scale=(1.25, 1.25), fixed_size=resize_hw),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
-            return device, yolo_model, hrnet_model, person_info, hrnet_transform
         except Exception as e:
             print(f"Model initialization failed: {e}")
-            return None, None, None, None, None
+            return False
+        return True
 
     def detect_person(self, frame):
         if self.yolo_model is None:
@@ -189,26 +185,26 @@ class VideoProcessor:
                     ox = max(0, min(roi_x1 + float(kp[0]), w - 1))
                     oy = max(0, min(roi_y1 + float(kp[1]), h - 1))
                     # 将索引1~4面部关键点坐标和置信度置零
-                    if i in [1, 2, 3, 4]:
+                    if i in [1,2,3,4]:
                         ox, oy = 0, 0
                         sc = 0.0
                     keypoints_list.append([int(ox), int(oy), float(sc)])
                 else:
                     keypoints_list.append([0, 0, 0.0])
         return [keypoints_list], scores
-
-    # 角度修正函数
-    def fix_endpoint_by_angle(self, mid_point, end_point, max_deg, deg, max_len, statue):
+    
+    #角度修正函数
+    def fix_endpoint_by_angle(self,mid_point, end_point, max_deg, deg, max_len, statue):
         dx = end_point[0] - mid_point[0]
         dy = end_point[1] - mid_point[1]
         length = math.sqrt(dx**2 + dy**2)
-        # 1用于手臂小于角度，2用于腿大于角度
+        #1用于手臂小于角度，2用于腿大于角度
         if statue == 1:
             if deg > max_deg:
                 diff = deg - max_deg
                 diff_rad = math.radians(diff)
-                cos_a = math.cos(-diff_rad)
-                sin_a = math.sin(-diff_rad)
+                cos_a = math.cos(-diff_rad) 
+                sin_a = math.sin(-diff_rad) 
 
                 new_dx = dx * cos_a - dy * sin_a
                 new_dy = dx * sin_a + dy * cos_a
@@ -216,35 +212,35 @@ class VideoProcessor:
                 new_y = mid_point[1] + new_dy
                 new_length = math.sqrt(new_dx**2 + new_dy**2)
             else:
-                new_length = length
+                new_length = length 
                 new_dx = dx
-                new_dy = dy
-                new_x = end_point[0]
-                new_y = end_point[1]
+                new_dy = dy   
+                new_x = end_point[0]  
+                new_y = end_point[1]           
             if new_length > max_len:
                 scale = max_len / new_length
                 return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
             return (new_x, new_y)
-
+        
         elif statue == 2:
             if deg < max_deg:
                 diff = deg - max_deg
                 diff_rad = math.radians(diff)
-                cos_a = math.cos(-diff_rad)
-                sin_a = math.sin(-diff_rad)
-
+                cos_a = math.cos(-diff_rad) 
+                sin_a = math.sin(-diff_rad) 
+                
                 new_dx = dx * cos_a - dy * sin_a
                 new_dy = dx * sin_a + dy * cos_a
                 new_x = mid_point[0] + new_dx
                 new_y = mid_point[1] + new_dy
                 new_length = math.sqrt(new_dx**2 + new_dy**2)
             else:
-                new_length = length
+                new_length = length 
                 new_dx = dx
-                new_dy = dy
-                new_x = end_point[0]
-                new_y = end_point[1]
-
+                new_dy = dy  
+                new_x = end_point[0]  
+                new_y = end_point[1] 
+                
             if new_length > max_len:
                 scale = max_len / new_length
                 return (mid_point[0] + new_dx * scale, mid_point[1] + new_dy * scale)
@@ -252,71 +248,68 @@ class VideoProcessor:
 
     def process_frame(self, frame, preview=True, normalize_for_storage=True):
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
-
-        def _no_person(output_frame):
-            """无有效关键点时统一处理，避免重复代码"""
-            if preview:
-                cv2.setWindowTitle('YOLO Detection', "No person")
-                cv2.imshow('YOLO Detection', output_frame)
-                cv2.waitKey(500)
-            self.all_points.append([])
-            self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
-            self.all_scale_info.append(None)
-            return output_frame, [], None, None, None
-
         try:
             list_p, _ = self.predict_frame(frame)
             p_pos = get_keypoints(list_p)
 
-            # 关键：先检查 p_pos 是否有效，再做角度/长度计算，避免索引越界
-            if not p_pos or len(p_pos) < 17:
-                return _no_person(cv2.resize(frame, (out_w, out_h)))
+            #增加长度和角度限制
+            #计算角度
+            r_a_a = calculate_angle(p_pos[6],p_pos[8],p_pos[10])
+            l_a_a = calculate_angle(p_pos[5],p_pos[7],p_pos[9]) 
+            r_l_a = calculate_angle(p_pos[12],p_pos[14],p_pos[16])
+            l_l_a = calculate_angle(p_pos[11],p_pos[13],p_pos[15])
 
-            # 增加长度和角度限制
-            # 计算角度
-            r_a_a = calculate_angle(p_pos[6], p_pos[8], p_pos[10])
-            l_a_a = calculate_angle(p_pos[5], p_pos[7], p_pos[9])
-            r_l_a = calculate_angle(p_pos[12], p_pos[14], p_pos[16])
-            l_l_a = calculate_angle(p_pos[11], p_pos[13], p_pos[15])
+            #计算长度，一般都是末端出现跑偏
+            r_a_l = distance(p_pos[8],p_pos[10])
+            l_a_l = distance(p_pos[7],p_pos[9])
+            r_l_l = distance(p_pos[14],p_pos[16])
+            l_l_l = distance(p_pos[13],p_pos[15])
 
-            # 计算长度，一般都是末端出现跑偏
-            r_a_l = distance(p_pos[8], p_pos[10])
-            l_a_l = distance(p_pos[7], p_pos[9])
-            r_l_l = distance(p_pos[14], p_pos[16])
-            l_l_l = distance(p_pos[13], p_pos[15])
-
-            if 0 <= r_a_a <= 170 and (r_a_l < 170):
+            if 0 <=r_a_a <= 170 and (r_a_l < 170):
                 pass
             else:
-                p_pos[10] = self.fix_endpoint_by_angle(p_pos[8], p_pos[10], 170, r_a_a, 170, 1)
+                p_pos[10] = self.fix_endpoint_by_angle(p_pos[8],p_pos[10],170,r_a_a,170,1)
 
-            if 0 <= l_a_a <= 170 and (l_a_l < 170):
+            if 0 <=l_a_a <= 170 and (l_a_l < 170):
                 pass
             else:
-                p_pos[9] = self.fix_endpoint_by_angle(p_pos[7], p_pos[9], 170, l_a_a, 170, 1)
+                p_pos[9] = self.fix_endpoint_by_angle(p_pos[7],p_pos[9],170,l_a_a,170,1)
 
-            if (180 <= r_l_a <= 360) and (r_l_l < 170):
+            if (180 <=r_l_a <= 360) and (r_l_l < 170) :
                 pass
             else:
-                p_pos[16] = self.fix_endpoint_by_angle(p_pos[14], p_pos[16], 170, r_l_a, 170, 2)
+                p_pos[16] = self.fix_endpoint_by_angle(p_pos[14],p_pos[16],170,r_l_a,170,2)
 
-            if (180 <= l_l_a <= 360) and (l_l_l < 170):
+            if (180 <=l_l_a <= 360) and (l_l_l < 170):
                 pass
             else:
-                p_pos[15] = self.fix_endpoint_by_angle(p_pos[13], p_pos[15], 170, l_l_a, 170, 2)
+                p_pos[15] = self.fix_endpoint_by_angle(p_pos[13],p_pos[15],170,l_l_a,170,2)
+            
+            
 
-            # 校验元素格式（角度修正后可能变成 tuple）
-            validated = []
-            for pt in p_pos:
-                if isinstance(pt, (list, tuple)) and len(pt) == 2:
-                    validated.append([float(pt[0]), float(pt[1])])
+            if p_pos and len(p_pos) >= 17:
+                validated = []
+                for pt in p_pos:
+                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                        validated.append([float(pt[0]), float(pt[1])])
+                    else:
+                        validated = []
+                        break
+                if len(validated) >= 17:
+                    p_pos = validated
                 else:
-                    validated = []
-                    break
-            if len(validated) >= 17:
-                p_pos = validated
-            else:
-                return _no_person(cv2.resize(frame, (out_w, out_h)))
+                    p_pos = []
+
+            if not p_pos or len(p_pos) < 17:
+                output_frame = cv2.resize(frame, (out_w, out_h))
+                if preview:
+                    cv2.setWindowTitle('YOLO Detection', "No person")
+                    cv2.imshow('YOLO Detection', output_frame)
+                    cv2.waitKey(500)
+                self.all_points.append([])
+                self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+                self.all_scale_info.append(None)
+                return output_frame, [], None, None, None
 
             norm_data = None
             scale_info = None
@@ -327,6 +320,7 @@ class VideoProcessor:
                 else:
                     norm_data = None
 
+            self.trajectory_tracker.update(p_pos)
             draw_points = [[p[0], p[1], 1.0] for p in p_pos]
             draw = Draw(frame, [draw_points])
             draw.draw_select()
@@ -351,7 +345,7 @@ class VideoProcessor:
             print(f"Error in process_frame: {str(e)[:80]}")
             output_frame = np.zeros((out_h, out_w, 3), dtype=np.uint8)
             self.all_points.append([])
-            self.all_normalized_points.append(np.zeros((17, 2), dtype=np.float32))
+            self.all_normalized_points.append(np.zeros((17,2), dtype=np.float32))
             self.all_scale_info.append(None)
             return output_frame, [], None, None, None
 
@@ -360,7 +354,9 @@ class VideoProcessor:
         time_gap = 1.0 / self.VIDEO_FRAME_SPEED
 
         self.vector_list.clear()
+        self.max_acc.clear()
         self.all_features.clear()
+        keypoint_prev = None
         step_state = 0
         step_count = 0
         step_freq = 0.0
@@ -372,8 +368,9 @@ class VideoProcessor:
             norm_data_fut = self.all_normalized_points[i+1]
 
             if not p_pos or len(p_pos) < 17:
+                keypoint_prev = None
                 self.all_features.append(np.zeros(26, dtype=np.float32))
-                self.vector_list.append(np.zeros((17, 2), dtype=np.float32))
+                self.vector_list.append(np.zeros((17,2), dtype=np.float32))
                 continue
 
             feature = Feature(norm_data)
@@ -385,6 +382,14 @@ class VideoProcessor:
             else:
                 vec = np.array(norm_data_fut, dtype=np.float32) - np.array(norm_data, dtype=np.float32)
             self.vector_list.append(vec)
+
+            if keypoint_prev is None:
+                acc_per_kp = []
+            else:
+                acc_per_kp = [acceleration(p_pos[j], keypoint_prev[j], time_gap) for j in range(17)]
+            keypoint_prev = [p.copy() for p in p_pos]
+            if acc_per_kp:
+                self.max_acc.append(max(acc_per_kp) / 1000.0)
 
             if len(p_pos) >= 17:
                 try:
@@ -419,7 +424,7 @@ class VideoProcessor:
             if self.vector_list:
                 self.vector_list.append(self.vector_list[-1].copy())
             else:
-                self.vector_list.append(np.zeros((17, 2), dtype=np.float32))
+                self.vector_list.append(np.zeros((17,2), dtype=np.float32))
 
         self.step_count = step_count
         self.step_freq = step_freq
@@ -432,11 +437,17 @@ class VideoProcessor:
                 np.array(self.all_features, dtype=np.float32))
         if len(self.vector_list) > 0:
             vec_arr = np.stack(self.vector_list, axis=0)
-            vec_min = vec_arr.min(axis=(0, 1), keepdims=True)
-            vec_max = vec_arr.max(axis=(0, 1), keepdims=True)
+            vec_min = vec_arr.min(axis=(0,1), keepdims=True)
+            vec_max = vec_arr.max(axis=(0,1), keepdims=True)
             vec_norm = (vec_arr - vec_min) / (vec_max - vec_min + 1e-8)
             np.save(os.path.join(out_dir, f"{self.video_name}_vector.npy"), vec_norm)
 
+        if len(self.max_acc) > 0:
+            eps = auto_eps(self.max_acc, 10)
+            print(f"Auto eps: {eps}")
+            frames = list(range(2, len(self.max_acc) + 2))
+            point_acceleration(frames, self.max_acc, self.video_name,
+                               use_dbscan=True, eps=eps, min_samples=10)
         print(f"所有特征已保存至 {out_dir}")
 
     def generate_video(self):
@@ -450,7 +461,7 @@ class VideoProcessor:
         out_w, out_h = self.OUTPUT_VIDEO_SIZE
         os.makedirs(os.path.join(self.output_dir, "result_video", "video"), exist_ok=True)
         output_path = os.path.join(self.output_dir, "result_video", "video",
-                                   f"yolo_hrnet-{self.video_name}.mp4")
+                                    f"yolo_hrnet-{self.video_name}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, self.VIDEO_FRAME_SPEED, (out_w, out_h))
         if not out.isOpened():
@@ -465,7 +476,7 @@ class VideoProcessor:
                 break
             frame_idx += 1
             try:
-                processed, _, _, _, _ = self.process_frame(frame, preview=self.show_video)
+                processed, _, _, _, _ = self.process_frame(frame, preview=True)
                 out.write(processed)
                 self._progress_bar(frame_idx, total_frames)
             except Exception as e:
@@ -488,29 +499,10 @@ class VideoProcessor:
         if current == total:
             print()
 
-
 if __name__ == '__main__':
-    input_dir = 'D:/Dataset/sprint/Whole'       # 输入文件夹
-    output_dir = 'D:/Dataset/sprint/result'     # 统一输出文件夹
-    SHOW_VIDEO = False                          # True=显示预览窗口，False=不显示
-
-    exts = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv')
-
-    videos = [os.path.join(input_dir, f) for f in sorted(os.listdir(input_dir))
-              if f.lower().endswith(exts)]
-    if not videos:
-        print("未找到视频文件:", input_dir)
-        sys.exit(1)
-
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"共找到 {len(videos)} 个视频，统一输出到: {output_dir}")
-    total_start = time.time()
-
-    for i, video_path in enumerate(videos, 1):
-        print(f"\n[{i}/{len(videos)}] 处理: {os.path.basename(video_path)}")
-        processor = VideoProcessor(video_path, output_dir=output_dir, show_video=SHOW_VIDEO)
-        start = time.time()
-        processor.generate_video()
-        print(f"[{i}/{len(videos)}] 耗时: {show_time(start, time.time())}")
-
-    print(f"\n全部完成，总耗时: {show_time(total_start, time.time())}")
+    input_path = 'D:/Dataset/sprint/Whole/run_13.mp4'
+    processor = VideoProcessor(input_path)
+    start = time.time()
+    processor.generate_video()
+    elapsed = show_time(start, time.time())
+    print(f"Total time: {elapsed}")

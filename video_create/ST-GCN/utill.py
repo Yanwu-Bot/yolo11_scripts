@@ -271,6 +271,24 @@ def calculate_angle(point_a, point_b, point_c):
     
     return angle
 
+def calculate_angle_180(point_a, point_b, point_c):
+    """返回三角形在顶点b处的内角（0°~180°）"""
+    ba = (point_a[0] - point_b[0], point_a[1] - point_b[1])
+    bc = (point_c[0] - point_b[0], point_c[1] - point_b[1])
+    
+    dot = ba[0]*bc[0] + ba[1]*bc[1]
+    norm_ba = math.sqrt(ba[0]**2 + ba[1]**2)
+    norm_bc = math.sqrt(bc[0]**2 + bc[1]**2)
+    
+    if norm_ba == 0 or norm_bc == 0:
+        return 0.0
+    
+    cos_angle = dot / (norm_ba * norm_bc)
+    cos_angle = max(-1, min(1, cos_angle))
+    angle = math.degrees(math.acos(cos_angle))
+    
+    return angle  # 0~180°
+
 #根据位置差计算加速度
 def acceleration(current_point, previous_point, time_gap):
     """

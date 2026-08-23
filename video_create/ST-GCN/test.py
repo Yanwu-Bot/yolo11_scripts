@@ -1,3 +1,4 @@
+#测试相似度
 import os
 import cv2
 import math

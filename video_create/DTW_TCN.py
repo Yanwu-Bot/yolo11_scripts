@@ -1,4 +1,3 @@
-#可用
 import cv2
 import numpy as np
 import matplotlib
@@ -14,140 +13,50 @@ import torch.nn as nn
 import torch.nn.functional as F
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-WINDOWSIZE = 6 #窗口大小
-MODEL = 'result/GCN/model/best_7_1.pth'
+WINDOWSIZE = 7 #窗口大小
+MODEL = 'D:/Dataset/sprint/result/model/TCN/best_7_1_tcn.pth'   # 改动：指向 MLP 训练脚本保存的模型
 
-class EADM(nn.Module):
-    """Energy-based Attention-guided Drop Module"""
-    def __init__(self, drop_ratio=0.2, lambda_=1e-4):
+class TCN_block(nn.Module):
+    def __init__(self, in_channels, out_channels, t_kernel_size=3, dilation=1, dropout=0.2):
         super().__init__()
-        self.drop_ratio = drop_ratio
-        self.lambda_ = lambda_
-    def forward(self, x):
-        B, C, T, V = x.shape
-        N = T * V
-        x_flat = x.view(B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)
-        diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))
-        k = int(N * self.drop_ratio)
-        if k > 0:
-            topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            mask = torch.ones_like(importance)
-            mask.scatter_(2, topk_indices, 0.0)
-        else:
-            mask = torch.ones_like(importance)
-        x_masked = x_flat * mask
-        keep_ratio = 1.0 - self.drop_ratio
-        if keep_ratio > 0:
-            x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
-        else:
-            x_masked = x_masked * 0
-        out = x_masked.view(B, C, T, V)
-        return out
-class COCOGraph:
-    def __init__(self, hop_size=2):
-        self.num_node = 17
-        self.hop_size = hop_size
-        self.get_edge()
-        self.hop_dis = self.get_hop_distance(self.num_node, self.edge, hop_size=hop_size)
-        self.get_adjacency()
-    def get_edge(self):
-        self_link = [(i, i) for i in range(self.num_node)]
-        neighbor_base = [
-            (0,5),(0,6),(5,6),(6,8),(8,10),(6,12),(5,7),(7,9),(5,11),(11,12),
-            (11,13),(13,15),(12,14),(14,16),(6,10),(5,9),(12,16),(11,15),(5,12),(6,11)
-        ]
-        self.edge = self_link + neighbor_base
-    def get_hop_distance(self, num_node, edge, hop_size):
-        A = np.zeros((num_node, num_node))
-        for i,j in edge:
-            A[j,i]=1; A[i,j]=1
-        hop_dis = np.zeros((num_node,num_node))+np.inf
-        transfer_mat = [np.linalg.matrix_power(A, d) for d in range(hop_size+1)]
-        arrive_mat = (np.stack(transfer_mat)>0)
-        for d in range(hop_size,-1,-1):
-            hop_dis[arrive_mat[d]] = d
-        return hop_dis
-    def get_adjacency(self):
-        valid_hop = range(0, self.hop_size+1)
-        adjacency = np.zeros((self.num_node, self.num_node))
-        for hop in valid_hop:
-            adjacency[self.hop_dis==hop]=1
-        normalize_adjacency = self.normalize_digraph(adjacency)
-        A = np.zeros((len(valid_hop), self.num_node, self.num_node))
-        for i, hop in enumerate(valid_hop):
-            A[i][self.hop_dis==hop] = normalize_adjacency[self.hop_dis==hop]
-        self.A = A
-    def normalize_digraph(self, A):
-        Dl = np.sum(A, 0)
-        Dn = np.zeros((A.shape[0], A.shape[0]))
-        for i in range(A.shape[0]):
-            if Dl[i]>0:
-                Dn[i,i] = Dl[i]**(-1)
-        return np.dot(A, Dn)
-class SpatialGraphConvolution(nn.Module):
-    def __init__(self, in_channels, out_channels, s_kernel_size):
-        super().__init__()
-        self.s_kernel_size = s_kernel_size
-        self.conv = nn.Conv2d(in_channels, out_channels*s_kernel_size, 1)
-    def forward(self, x, A):
-        x = self.conv(x)
-        n, kc, t, v = x.size()
-        x = x.view(n, self.s_kernel_size, kc//self.s_kernel_size, t, v)
-        x = torch.einsum('nkctv,kvw->nctw', (x, A))
-        return x.contiguous()
-class STGC_block(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.5):
-        super().__init__()
-        self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
-        self.M = nn.Parameter(torch.ones(A_size))
-        self.B = nn.Parameter(torch.zeros(A_size))
-        self.tgc = nn.Sequential(
-            nn.BatchNorm2d(out_channels), nn.ReLU(), nn.Dropout(dropout),
-            nn.Conv2d(out_channels, out_channels, (t_kernel_size,1), (stride,1),
-                    ((t_kernel_size-1)//2,0)),
-            nn.BatchNorm2d(out_channels), nn.ReLU())
-    def forward(self, x, A):
-        return self.tgc(self.sgc(x, A * self.M + self.B))
-class ContrastiveEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
-        super().__init__()
-        graph = COCOGraph(hop_size)
-        A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
-        self.register_buffer('A', A)
-        A_size = A.size()
-        self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
-        self.stgc1 = STGC_block(in_channels, 32, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc2 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc3 = STGC_block(32, 32, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
-        self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
-        # self.eadm = EADM(drop_ratio=0.2)
-        self.projection = nn.Sequential(
-            nn.Linear(64, 64),
+        pad = ((t_kernel_size - 1) * dilation) // 2
+        self.conv = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(),
-            nn.Linear(64, output_dim)
+            nn.Dropout(dropout),
+            nn.Conv2d(in_channels, out_channels,
+                        (t_kernel_size, 1), padding=(pad, 0), dilation=(dilation, 1)),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU()
         )
     def forward(self, x):
+        return self.conv(x)
+
+class TCNEncoder(nn.Module):
+    def __init__(self, in_channels=2, t_kernel_size=3, output_dim=64, num_joints=17):
+        super().__init__()
+        self.bn = nn.BatchNorm1d(in_channels * num_joints)   # 34
+        self.tcn1 = TCN_block(34, 64, t_kernel_size)
+        self.tcn2 = TCN_block(64, 64, t_kernel_size)
+        self.tcn3 = TCN_block(64, 128, t_kernel_size)
+        self.projection = nn.Sequential(
+            nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, output_dim)
+        )
+
+    def forward(self, x):
         N, C, T, V = x.size()
-        x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
+        x = x.permute(0, 3, 1, 2).contiguous().view(N, V * C, T)  # (N, 34, T) 关节拼进通道
         x = self.bn(x)
-        x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
-        x = self.stgc1(x, self.A)
-        x = self.stgc2(x, self.A)
-        x = self.stgc3(x, self.A)
-        x = self.stgc4(x, self.A)
-        x = self.stgc5(x, self.A)
-        x = self.stgc6(x, self.A)
-        # x = self.eadm(x)
-        x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
+        x = x.unsqueeze(-1)                     # (N, 34, T, 1)
+        x = self.tcn1(x)
+        x = self.tcn2(x)
+        x = self.tcn3(x)
+        x = x.squeeze(-1)                       # (N, 128, T)
+        x = x.mean(dim=2)                       # 时间池化
         x = self.projection(x)
         return F.normalize(x, dim=1)
-#评分类
+
+
 class VideoScoreEvaluator:
     def __init__(self, 
                 template_video: str = None,
@@ -194,12 +103,12 @@ class VideoScoreEvaluator:
             self.set_videos(template_video, test_video)
 
         self.window = WINDOWSIZE
-        self.mu =None
+        self.mu = None
         self.sigma = None
 
         self.kps1 = []
         self.kps2 = []
-        self.window_sim_scores = None  # 保存每个窗口的ST-GCN相似度得分
+        self.window_sim_scores = None  # 保存每个窗口的MLP相似度得分
 
     def set_videos(self, template_video: str, test_video: str):
         self.template_video = template_video
@@ -326,7 +235,7 @@ class VideoScoreEvaluator:
         # 窗口聚合
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = ContrastiveEncoder(output_dim=64).to(device)
+            model = TCNEncoder(output_dim=64).to(device)   
             model.load_state_dict(torch.load(MODEL, map_location=device))
             scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
             self.window_sim_scores = scores # 记录窗口相似度得分
@@ -373,7 +282,7 @@ class VideoScoreEvaluator:
             self.window_sim_scores = np.array(self.window_sim_scores)/100 #缩放
 
             #最终得分计算，结合相似度
-            alpha = 0.2  # 可调
+            alpha = 0.3  # 可调
             scores = scores * (1 - alpha * (1 - self.window_sim_scores))
             scores = np.delete(scores, -1)
             self.mu = scores.mean()
@@ -515,7 +424,7 @@ def visualize_window(evaluator, window_idx):
     fig, axes = plt.subplots(2, n_frames, figsize=(3*n_frames, 6))
     if n_frames == 1:
         axes = axes.reshape(2, 1)
-    fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',
+    fig.suptitle(f'Window {window_idx} (MLP Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',  # 改动：ST-GCN -> MLP
                     fontsize=14)
 
     for i in range(n_frames):
@@ -567,7 +476,7 @@ def visualize_dtw_path(evaluator):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_7.mp4',
+        test_video='run_12.mp4',
         features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},

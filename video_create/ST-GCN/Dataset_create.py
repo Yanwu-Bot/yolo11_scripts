@@ -1,3 +1,4 @@
+#创建窗口训练数据集
 import os
 import cv2
 import math

@@ -1,4 +1,5 @@
-#增加了batch间距离过滤的ST-GCN与ST-GCN其他无异
+# ST_filter_fea.py
+# 增加了batch间距离过滤的ST-GCN与ST-GCN其他无异
 import time
 import os
 import math
@@ -10,6 +11,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt  
+from Feature import Feature
 
 MODEL_SAVE_N = 'best_7_1_f.pth'
 
@@ -81,8 +83,8 @@ class STGC_block(nn.Module):
     def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.3):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
-        self.M = nn.Parameter(torch.ones(A_size))
-        self.B = nn.Parameter(torch.zeros(A_size))
+        self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
+        self.B = nn.Parameter(torch.zeros(A_size))         # 自学习边
         self.tgc = nn.Sequential(
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
@@ -96,6 +98,7 @@ class STGC_block(nn.Module):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
 class EADM(nn.Module):
+    """Energy-based Attention-guided Drop Module (简化版)"""
     def __init__(self, drop_ratio=0.3, lambda_=1e-4):
         super().__init__()
         self.drop_ratio = drop_ratio
@@ -139,6 +142,7 @@ class ContrastiveEncoder(nn.Module):
         self.stgc4 = STGC_block(32, 64, 2, t_kernel_size, A_size, dropout=0.1)
         self.stgc5 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
         self.stgc6 = STGC_block(64, 64, 1, t_kernel_size, A_size, dropout=0.1)
+        # self.eadm = EADM(drop_ratio=0.2)
         self.projection = nn.Sequential(
             nn.Linear(64, 64),
             nn.ReLU(),
@@ -155,11 +159,20 @@ class ContrastiveEncoder(nn.Module):
         x = self.stgc4(x, self.A)
         x = self.stgc5(x, self.A)
         x = self.stgc6(x, self.A)
+        # x = self.eadm(x)
         x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None, threshold=0.0):
+def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
+                threshold=0.0, frame_features=None):
+    """
+    threshold 过滤逻辑：
+    1. 取 batch 内每个窗口的逐帧特征 (B, T, 26)（预计算查表 / 兜底即时提取）
+    2. 对每个窗口对 (i,j)：同一帧 t 的特征差 -> 对 26 维求欧氏距离 -> 该帧特征距离标量
+    3. 对 T 帧的距离标量取平均 -> 窗口间距离 D
+    4. D < threshold 的负样本被过滤
+    """
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
@@ -168,31 +181,38 @@ def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None, 
     for i in range(batch_size):
         pos_mask[i, i+batch_size] = True
         pos_mask[i+batch_size, i] = True
-
-    if threshold > 0 and raw_windows is not None and batch_indices is not None:
-        cur_raw = raw_windows[batch_indices]  # (B, T, V, 2)
-        # 计算原始窗口间距离矩阵 (B, B)
-        dists = np.zeros((batch_size, batch_size), dtype=np.float32)
-        for i in range(batch_size):
-            w_i = cur_raw[i]
-            for j in range(i+1, batch_size):
-                w_j = cur_raw[j]
-                diff = np.linalg.norm(w_i - w_j, axis=-1)
-                d = np.mean(diff)
-                dists[i, j] = d
-                dists[j, i] = d
-
-        # 扩展为 (2B, 2B) 与 sim 形状一致
-        full_dists = np.zeros((2*batch_size, 2*batch_size), dtype=np.float32)
-        full_dists[:batch_size, :batch_size] = dists
-        full_dists[:batch_size, batch_size:] = dists
-        full_dists[batch_size:, :batch_size] = dists
-        full_dists[batch_size:, batch_size:] = dists
-
-        invalid_neg_mask = (full_dists < threshold) & (~pos_mask.cpu().numpy())
-        invalid = torch.tensor(invalid_neg_mask, device=sim.device)
-        sim[invalid] = -1e9
-
+    if threshold > 0:
+        # ---- 取当前 batch 的逐帧特征 (B, T, 26) ----
+        if frame_features is not None:
+            cur_feat = frame_features[batch_indices]       # (B, T, 26) 查表
+        elif raw_windows is not None and batch_indices is not None:
+            cur_raw = raw_windows[batch_indices]           # (B, T, V, 2)
+            B, T = cur_raw.shape[0], cur_raw.shape[1]
+            cur_feat = np.zeros((B, T, 26), dtype=np.float32)
+            for b in range(B):
+                for t in range(T):
+                    try:
+                        cur_feat[b, t] = Feature(cur_raw[b, t].tolist()).get_all_features()
+                    except Exception:
+                        cur_feat[b, t] = 0.0
+        else:
+            cur_feat = None
+        if cur_feat is not None:
+            # 逐帧差: (B, B, T, 26)
+            diff = cur_feat[:, None, :, :] - cur_feat[None, :, :, :]
+            # 欧氏距离: 对 26 维求 L2 范数 -> 每帧特征距离标量 (B, B, T)
+            frame_dist = np.linalg.norm(diff, axis=-1)
+            # 对 T 帧聚合 -> 窗口间距离 (B, B)
+            dists = frame_dist.mean(axis=-1)           # 取平均（默认）
+            # 扩展为 (2B, 2B) 与 sim 形状一致
+            full_dists = np.zeros((2*batch_size, 2*batch_size), dtype=np.float32)
+            full_dists[:batch_size, :batch_size] = dists
+            full_dists[:batch_size, batch_size:] = dists
+            full_dists[batch_size:, :batch_size] = dists
+            full_dists[batch_size:, batch_size:] = dists
+            invalid_neg_mask = (full_dists < threshold) & (~pos_mask.cpu().numpy())
+            invalid = torch.tensor(invalid_neg_mask, device=sim.device)
+            sim[invalid] = -1e9
     sim = sim[~mask].view(2*batch_size, -1)
     pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
     neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
@@ -317,6 +337,18 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
 
     raw_windows = dataset.windows
 
+    # ===== 改动1：预计算全数据集逐帧特征 (N, T, 26)，训练循环内查表 =====
+    print("预计算全数据集逐帧特征 (N, T, 26)...")
+    T = raw_windows.shape[1]
+    frame_features = np.zeros((len(raw_windows), T, 26), dtype=np.float32)
+    for n in range(len(raw_windows)):
+        for t in range(T):
+            try:
+                frame_features[n, t] = Feature(raw_windows[n, t].tolist()).get_all_features()
+            except Exception:
+                frame_features[n, t] = 0.0
+    print(f"预计算完成: {frame_features.shape}")
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -334,7 +366,8 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
                 z1, z2, temperature,
                 raw_windows=raw_windows,
                 batch_indices=batch_indices,
-                threshold=diversity_threshold
+                threshold=diversity_threshold,
+                frame_features=frame_features          # ===== 改动2：传入预计算特征 =====
             )
             optimizer.zero_grad()
             loss.backward()
@@ -393,6 +426,6 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.15, 'noise':0.05, 'mask':0.1,
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
-    train_contrastive(dataset, epochs=100, batch_size=128, lr=0.001, temperature=0.1, diversity_threshold=25)
+    train_contrastive(dataset, epochs=100, batch_size=128, lr=0.001, temperature=0.1, diversity_threshold=0.9)
     elapsed = show_time(start_time, time.time())
     print(f"Total time: {elapsed}")
