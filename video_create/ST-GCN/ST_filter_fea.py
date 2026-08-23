@@ -183,20 +183,7 @@ def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
         pos_mask[i+batch_size, i] = True
     if threshold > 0:
         # ---- 取当前 batch 的逐帧特征 (B, T, 26) ----
-        if frame_features is not None:
-            cur_feat = frame_features[batch_indices]       # (B, T, 26) 查表
-        elif raw_windows is not None and batch_indices is not None:
-            cur_raw = raw_windows[batch_indices]           # (B, T, V, 2)
-            B, T = cur_raw.shape[0], cur_raw.shape[1]
-            cur_feat = np.zeros((B, T, 26), dtype=np.float32)
-            for b in range(B):
-                for t in range(T):
-                    try:
-                        cur_feat[b, t] = Feature(cur_raw[b, t].tolist()).get_all_features()
-                    except Exception:
-                        cur_feat[b, t] = 0.0
-        else:
-            cur_feat = None
+        cur_feat = frame_features[batch_indices]       # (B, T, 26) 查表
         if cur_feat is not None:
             # 逐帧差: (B, B, T, 26)
             diff = cur_feat[:, None, :, :] - cur_feat[None, :, :, :]
@@ -204,7 +191,7 @@ def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
             frame_dist = np.linalg.norm(diff, axis=-1)
             # 对 T 帧聚合 -> 窗口间距离 (B, B)
             dists = frame_dist.mean(axis=-1)           # 取平均（默认）
-            # 扩展为 (2B, 2B) 与 sim 形状一致
+            # 填充(2B,2B)
             full_dists = np.zeros((2*batch_size, 2*batch_size), dtype=np.float32)
             full_dists[:batch_size, :batch_size] = dists
             full_dists[:batch_size, batch_size:] = dists
@@ -337,14 +324,13 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
 
     raw_windows = dataset.windows
 
-    # ===== 改动1：预计算全数据集逐帧特征 (N, T, 26)，训练循环内查表 =====
     print("预计算全数据集逐帧特征 (N, T, 26)...")
     T = raw_windows.shape[1]
     frame_features = np.zeros((len(raw_windows), T, 26), dtype=np.float32)
     for n in range(len(raw_windows)):
         for t in range(T):
             try:
-                frame_features[n, t] = Feature(raw_windows[n, t].tolist()).get_all_features()
+                frame_features[n, t] = Feature(raw_windows[n, t].tolist()).get_all_features() #帧数据，帧
             except Exception:
                 frame_features[n, t] = 0.0
     print(f"预计算完成: {frame_features.shape}")
