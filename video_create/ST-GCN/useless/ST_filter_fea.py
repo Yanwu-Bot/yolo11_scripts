@@ -97,37 +97,6 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
-class EADM(nn.Module):
-    """Energy-based Attention-guided Drop Module (简化版)"""
-    def __init__(self, drop_ratio=0.3, lambda_=1e-4):
-        super().__init__()
-        self.drop_ratio = drop_ratio
-        self.lambda_ = lambda_
-    def forward(self, x):
-        B, C, T, V = x.shape
-        N = T * V
-        x_flat = x.view(B, C, N)
-        mu = x_flat.mean(dim=2, keepdim=True)
-        var = x_flat.var(dim=2, keepdim=True, unbiased=False)
-        diff = x_flat - mu
-        energy = 4 * (var + self.lambda_) / (diff**2 + 2*var + 2*self.lambda_)
-        importance = torch.sigmoid(1.0 / (energy + 1e-10))
-        k = int(N * self.drop_ratio)
-        if k > 0:
-            topk_values, topk_indices = torch.topk(importance, k, dim=2, largest=True, sorted=False)
-            mask = torch.ones_like(importance)
-            mask.scatter_(2, topk_indices, 0.0)
-        else:
-            mask = torch.ones_like(importance)
-        x_masked = x_flat * mask
-        keep_ratio = 1.0 - self.drop_ratio
-        if keep_ratio > 0:
-            x_masked = x_masked * (N / (N * keep_ratio + 1e-8))
-        else:
-            x_masked = x_masked * 0
-        out = x_masked.view(B, C, T, V)
-        return out
-
 class ContrastiveEncoder(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
         super().__init__()
@@ -166,13 +135,6 @@ class ContrastiveEncoder(nn.Module):
 
 def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
                 threshold=0.0, frame_features=None):
-    """
-    threshold 过滤逻辑：
-    1. 取 batch 内每个窗口的逐帧特征 (B, T, 26)（预计算查表 / 兜底即时提取）
-    2. 对每个窗口对 (i,j)：同一帧 t 的特征差 -> 对 26 维求欧氏距离 -> 该帧特征距离标量
-    3. 对 T 帧的距离标量取平均 -> 窗口间距离 D
-    4. D < threshold 的负样本被过滤
-    """
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
@@ -182,7 +144,6 @@ def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
         pos_mask[i, i+batch_size] = True
         pos_mask[i+batch_size, i] = True
     if threshold > 0:
-        # ---- 取当前 batch 的逐帧特征 (B, T, 26) ----
         cur_feat = frame_features[batch_indices]       # (B, T, 26) 查表
         if cur_feat is not None:
             # 逐帧差: (B, B, T, 26)

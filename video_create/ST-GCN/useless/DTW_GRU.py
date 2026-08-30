@@ -483,7 +483,7 @@ def visualize_dtw_path(evaluator):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_12.mp4',
+        test_video='run_13.mp4',
         features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},

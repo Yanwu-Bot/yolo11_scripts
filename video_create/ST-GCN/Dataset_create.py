@@ -310,7 +310,7 @@ class ContrastiveWindowDataset(torch.utils.data.Dataset):
         return torch.FloatTensor(anchor_data).permute(2, 0, 1)
 
 if __name__ == '__main__':
-    video_folder = 'D:/Dataset/sprint/Whole'
+    video_folder = 'D:/Dataset/sprint/train'
     dataset = ContrastiveWindowDataset(
         video_source=video_folder,
         window_size=7,

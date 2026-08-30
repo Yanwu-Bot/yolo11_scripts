@@ -1,5 +1,4 @@
-# DTW_test_MLP.py（适用MLP编码器的评分版本）
-# 与 DTW_test.py 框架完全一致，仅将 ST-GCN 编码器替换为 MLPEncoder
+#可用
 import cv2
 import numpy as np
 import matplotlib
@@ -13,40 +12,12 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import module
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 7 #窗口大小
-MODEL = 'D:/Dataset/sprint/result/model/MLP/best_7_1_mlp.pth'   # 改动：指向 MLP 训练脚本保存的模型
-
-class MLPEncoder(nn.Module):
-    """
-    展平后为 N*238 维，映射到 output_dim 维并 L2 归一化。
-    """
-    def __init__(self, in_channels=2, window_size=7, num_joints=17,
-                 hidden_dim=256, output_dim=64, dropout=0.2):
-        super().__init__()
-        self.input_dim = in_channels * window_size * num_joints   # 2*7*17 = 238
-        self.bn = nn.BatchNorm1d(self.input_dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim)
-        )
-
-    def forward(self, x):
-        # x: (N, C, T, V)
-        N = x.size(0)
-        x = x.reshape(N, -1)        # 写法1：reshape 自动处理非连续
-        x = self.bn(x)
-        x = self.mlp(x)
-        return F.normalize(x, dim=1)
-
+MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_7_1_f.pth'
+#评分类
 class VideoScoreEvaluator:
     def __init__(self, 
                 template_video: str = None,
@@ -93,12 +64,12 @@ class VideoScoreEvaluator:
             self.set_videos(template_video, test_video)
 
         self.window = WINDOWSIZE
-        self.mu = None
+        self.mu =None
         self.sigma = None
 
         self.kps1 = []
         self.kps2 = []
-        self.window_sim_scores = None  # 保存每个窗口的MLP相似度得分
+        self.window_sim_scores = None  # 保存每个窗口的ST-GCN相似度得分
 
     def set_videos(self, template_video: str, test_video: str):
         self.template_video = template_video
@@ -147,7 +118,7 @@ class VideoScoreEvaluator:
         print(f"DTW对齐完成: 路径长度 = {len(path)}")
         return path
 
-    def compute_pairwise_scores(self, path: np.ndarray, use_window=True):
+    def compute_pairwise_scores(self, path: np.ndarray, use_window=True,select='STGCN'):
         #导入特征文件
         template_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_features.npy")
@@ -225,8 +196,27 @@ class VideoScoreEvaluator:
         # 窗口聚合
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = MLPEncoder(output_dim=64).to(device)   # 改动：MLPEncoder
-            model.load_state_dict(torch.load(MODEL, map_location=device))
+            if select == 'STGCN':
+                MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_7_1_stgcn.pth'
+                model = module.STGCNEncoder(output_dim=64).to(device)
+                model.load_state_dict(torch.load(MODEL, map_location=device))
+            elif select == 'GRU':
+                MODEL = 'D:/Dataset/sprint/result/model/GRU/best_7_1_gru.pth' 
+                model = module.GRUEncoder(output_dim=64).to(device)
+                model.load_state_dict(torch.load(MODEL, map_location=device))  
+            elif select == 'LSTM':
+                MODEL = 'D:/Dataset/sprint/result/model/LSTM/best_7_1_lstm.pth'                 
+                model = module.LSTMEncoder(output_dim=64).to(device)
+                model.load_state_dict(torch.load(MODEL, map_location=device))  
+            elif select == 'MLP':
+                MODEL = 'D:/Dataset/sprint/result/model/MLP/best_7_1_mlp.pth'
+                model = module.MLPEncoder(output_dim=64).to(device)
+                model.load_state_dict(torch.load(MODEL, map_location=device))
+            if select == 'TCN':
+                MODEL = 'D:/Dataset/sprint/result/model/TCN/best_7_1_tcn.pth'                
+                model = module.TCNEncoder(output_dim=64).to(device)
+                model.load_state_dict(torch.load(MODEL, map_location=device))
+
             scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
             self.window_sim_scores = scores # 记录窗口相似度得分
             L = len(path)
@@ -286,7 +276,7 @@ class VideoScoreEvaluator:
         else:
             print("Error")
 
-    def score_video(self) -> tuple:
+    def score_video(self,sel='STGCN') -> tuple:
         template_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_features.npy")
         test_feat_path = os.path.join(self.features_dir, 
@@ -301,7 +291,7 @@ class VideoScoreEvaluator:
         print(f"测试视频帧数: {self.test_features.shape[0]}")
         
         path = self.calculate_video_score(self.test_features, self.template_features)
-        self.compute_pairwise_scores(path, use_window=True)
+        self.compute_pairwise_scores(path, use_window=True,select=sel)
         
     def visualize_aligned_frames(self, pair_index: int):
         if self.path is None:
@@ -414,7 +404,7 @@ def visualize_window(evaluator, window_idx):
     fig, axes = plt.subplots(2, n_frames, figsize=(3*n_frames, 6))
     if n_frames == 1:
         axes = axes.reshape(2, 1)
-    fig.suptitle(f'Window {window_idx} (MLP Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',  # 改动：ST-GCN -> MLP
+    fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',
                     fontsize=14)
 
     for i in range(n_frames):
@@ -466,13 +456,15 @@ def visualize_dtw_path(evaluator):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_12.mp4',
+        test_video='run_14.mp4',
         features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
-    evaluator.score_video()
+    """输入想使用的模型"""
+    evaluator.score_video('LSTM')
+
     visualize_dtw_path(evaluator) 
     VIEW_FRAME = 203
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
