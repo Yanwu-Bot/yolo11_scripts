@@ -68,7 +68,7 @@ class SpatialGraphConvolution(nn.Module):
         return x.contiguous()
 
 class STGC_block(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.3):
+    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.2):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
         self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
@@ -85,7 +85,7 @@ class STGC_block(nn.Module):
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
-class STGCNEncoder(nn.Module):
+class STGCNEncoder1(nn.Module):
     def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
         super().__init__()
         graph = COCOGraph(hop_size)
@@ -121,6 +121,40 @@ class STGCNEncoder(nn.Module):
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
+class STGCNEncoder(nn.Module):
+    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
+        super().__init__()
+        graph = COCOGraph(hop_size)
+        A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
+        self.register_buffer('A', A)
+        A_size = A.size()
+        self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
+        self.stgc1 = STGC_block(in_channels, 16, 1, t_kernel_size, A_size, dropout=0.1)
+        self.stgc2 = STGC_block(16, 32, 1, t_kernel_size, A_size, dropout=0.1)
+        self.stgc3 = STGC_block(32, 64, 1, t_kernel_size, A_size, dropout=0.1)
+
+        # self.eadm = EADM(drop_ratio=0.2)
+        self.projection = nn.Sequential(
+            nn.Linear(64, 64),
+            nn.BatchNorm1d(64),  
+            nn.Dropout(0.2),           
+            nn.ReLU(),
+            nn.Linear(64, output_dim)
+        )
+    def forward(self, x):
+        N, C, T, V = x.size()
+        x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
+        x = self.bn(x)
+        x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
+        x = self.stgc1(x, self.A)
+        x = self.stgc2(x, self.A)
+        x = self.stgc3(x, self.A)
+        # x = self.eadm(x)
+        x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
+        x = self.projection(x)
+        return F.normalize(x, dim=1)
+
+
 class MLPEncoder(nn.Module):
     """
     展平后为 N*238 维，映射到 output_dim 维并 L2 归一化。
@@ -146,7 +180,7 @@ class MLPEncoder(nn.Module):
     def forward(self, x):
         # x: (N, C, T, V)
         N = x.size(0)
-        x = x.reshape(N, -1)        # 写法1：reshape 自动处理非连续
+        x = x.reshape(N, -1)        
         x = self.bn(x)
         x = self.mlp(x)
         return F.normalize(x, dim=1)
@@ -296,6 +330,65 @@ class SkeletonTransformerBlock(nn.Module):
         x = x + self.ffn(x)
         x = self.norm2(x)
         return x
+
+class SkeletonTransformerEncoder(nn.Module):
+    """
+    带骨骼结构先验的 Transformer 编码器。
+
+    token 化方式：每个关节点 = 1 个 token。
+    - 输入 (N, C, T, V)
+    - 变换为 (N, V, T, C)，每个关节 token 的特征是它所有时间帧的坐标 (T*C 维)
+    - 加【时间位置编码】保留时序
+    - 线性映射到 d_model
+    - 加【关节位置编码】保留关节身份
+    - 多层自注意力，注意力分数带【骨骼图距离偏置】
+    - 对 V 个关节 token 做平均池化 -> 投影 -> L2 归一化
+    """
+    def __init__(self, in_channels=2, window_size=7, num_joints=17, hop_size=2,
+                d_model=128, nhead=4, num_layers=2, dim_feedforward=256,
+                output_dim=64, dropout=0.2):
+        super().__init__()
+        self.window_size = window_size
+        self.num_joints = num_joints
+        graph = COCOGraph(hop_size)
+        # 把 hop_dis 离散为 0/1/2/>=3 四类
+        hop_dis = graph.hop_dis
+        hop_cat = np.where(hop_dis < 3.0, hop_dis, 3.0).astype(np.int64)
+        self.register_buffer('hop_idx', torch.from_numpy(hop_cat))   # (V, V)
+
+        self.token_dim = in_channels * window_size                    # 2*7 = 14
+        self.embed = nn.Linear(self.token_dim, d_model)
+        # 时间位置编码：(1, 1, T, C)
+        self.temporal_pos_embed = nn.Parameter(torch.randn(1, 1, window_size, in_channels) * 0.02)
+        # 关节位置编码：(1, V, d_model)
+        self.joint_pos_embed = nn.Parameter(torch.randn(1, num_joints, d_model) * 0.02)
+
+        self.blocks = nn.ModuleList([
+            SkeletonTransformerBlock(d_model, nhead, dim_feedforward, dropout, num_hop=4)
+            for _ in range(num_layers)
+        ])
+        self.norm = nn.LayerNorm(d_model)
+        self.projection = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, output_dim)
+        )
+
+    def forward(self, x):
+        # x: (N, C, T, V)
+        N, C, T, V = x.size()
+        x = x.permute(0, 3, 2, 1)            # (N, V, T, C)
+        x = x + self.temporal_pos_embed      # 加时间位置编码（广播）
+        x = x.reshape(N, V, T * C)           # (N, V, 14)
+        x = self.embed(x)                    # (N, V, d_model)
+        x = x + self.joint_pos_embed         # 加关节位置编码
+        for block in self.blocks:
+            x = block(x, self.hop_idx)
+        x = self.norm(x)
+        x = x.mean(dim=1)                    # 关节 token 平均池化 -> (N, d_model)
+        x = self.projection(x)
+        return F.normalize(x, dim=1)
 
 class SkeletonTransformerEncoder(nn.Module):
     """

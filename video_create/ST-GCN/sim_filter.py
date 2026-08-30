@@ -300,9 +300,9 @@ if __name__ == '__main__':
         transform_params={'rotation':15, 'scale':0.15, 'noise':0.05, 'mask':0.1,
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
-  
+
     train_contrastive(dataset, epochs=100, batch_size=128, lr=0.001, temperature=0.1, diversity_threshold=0.9,
-                    select='Trans')  #输入想使用的模型
+                    select='STGCN')  #输入想使用的模型
     """
     STGCN,GRU,LSTM,MLP,TCN,Trans
     """

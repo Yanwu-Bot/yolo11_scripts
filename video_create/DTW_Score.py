@@ -13,6 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import module
+from AcDTW import acdtw
+
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
 WINDOWSIZE = 7 #窗口大小
@@ -111,11 +113,17 @@ class VideoScoreEvaluator:
         return mu
 
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> np.ndarray:
-        #dis,path = fastdtw(test_features, template_features, dist=euclidean)
-        path = dtw_ndim.warping_path(test_features, template_features, window=20)
-        path = np.array(path)
+        def med_dist(tf, pf):
+            score = self.calculate_frame_score(tf, pf, t=0.075, k=4)
+            return max(0.0, 100.0 - score)   # 距离越小越好
+        path, med_mat, tp, tq = acdtw(
+            test_features,
+            template_features,
+            dist_func=med_dist,
+            window=None,   # 也可设置 Sakoe-Chiba band，例如 20
+        )
         self.path = path
-        print(f"DTW对齐完成: 路径长度 = {len(path)}")
+        print(f"ACDTW对齐完成: 路径长度 = {len(path)}")
         return path
 
     def compute_pairwise_scores(self, path: np.ndarray, use_window=True,select='STGCN'):
@@ -456,19 +464,19 @@ def visualize_dtw_path(evaluator):
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_5.mp4',
-        test_video='run_14.mp4',
+        test_video='run_13.mp4',
         features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
         weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
         output_dir='result/plots'
     )
     """输入想使用的模型"""
-    evaluator.score_video('LSTM')
+    evaluator.score_video('STGCN')
 
     visualize_dtw_path(evaluator) 
     VIEW_FRAME = 203
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=1)
+    visualize_window(evaluator, window_idx=13)
     evaluator.print_summary()
