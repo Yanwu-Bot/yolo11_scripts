@@ -436,6 +436,20 @@ class VideoProcessor:
 
         print(f"所有特征已保存至 {out_dir}")
 
+    def get_valid_keypoint_sequence(self):
+        """
+        返回本视频过滤掉无效帧(全零行)后的归一化骨架序列 (T,17,2)。
+        语义与 Dataset_create 的“检测不到人就跳过该帧”对齐：
+        VIDEO_List 对无人帧写入的是全零 (17,2) 行，切窗前必须剔除。
+        """
+        if not self.all_normalized_points:
+            return None
+        arr = np.stack(self.all_normalized_points, axis=0)   # (T,17,2)
+        flat = arr.reshape(arr.shape[0], -1)                 # (T,34)
+        mask = np.any(flat != 0, axis=1)                     # 整帧 34 个值全 0 → 无效帧
+        seq = arr[mask]
+        return seq.astype(np.float32) if len(seq) > 0 else None
+
     def generate_video(self):
         cap = cv2.VideoCapture(self.input_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -485,10 +499,54 @@ class VideoProcessor:
         if current == total:
             print()
 
+def build_window_dataset(sequences, window_size=9, stride=2,
+                         save_path='result/GCN/dataset/dataset.npz'):
+    window_list = []
+    video_names = []
+
+    for name, seq in sequences:
+        if seq is None or len(seq) < window_size:
+            print(f"  跳过 {name}: 有效帧 {0 if seq is None else len(seq)} < {window_size}")
+            continue
+        # 只有真正参与切窗的视频才分配索引，保证 video_indices 连续为 0~K-1
+        video_idx = len(video_names)
+        video_names.append(name)
+        for start in range(0, len(seq) - window_size + 1, stride):
+            window_list.append((video_idx, start, seq[start:start + window_size]))
+
+    num_windows = len(window_list)
+    print(f"共 {len(video_names)} 个视频，生成 {num_windows} 个窗口")
+    if num_windows == 0:
+        print("未生成任何窗口，不保存文件")
+        return
+
+    windows = np.zeros((num_windows, window_size, 17, 2), dtype=np.float32)
+    video_indices = np.zeros(num_windows, dtype=np.int32)
+    start_frames = np.zeros(num_windows, dtype=np.int32)
+    for i, (vi, start, w) in enumerate(window_list):
+        windows[i] = w
+        video_indices[i] = vi
+        start_frames[i] = start
+
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+    np.savez(save_path,
+            windows=windows,
+            video_indices=video_indices,
+            start_frames=start_frames,
+            window_size=window_size,
+            stride=stride)
+    print(f"窗口数据集已保存至 {save_path}")
+
 if __name__ == '__main__':
     input_dir = 'D:/Dataset/sprint/Whole'       # 输入文件夹
     output_dir = 'D:/Dataset/sprint/result'     # 统一输出文件夹
     SHOW_VIDEO = False                          # True=显示预览窗口，False=不显示
+
+    ENABLE_SLIDING_WINDOW = True
+    WINDOW_SIZE = 9
+    STRIDE = 2
+    WINDOW_SAVE_PATH = 'D:/Dataset/sprint/result/window_data/dataset_9_2.npz'
+
     exts = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv')
     videos = [os.path.join(input_dir, f) for f in sorted(os.listdir(input_dir))
             if f.lower().endswith(exts)]
@@ -499,12 +557,24 @@ if __name__ == '__main__':
     print(f"共找到 {len(videos)} 个视频，统一输出到: {output_dir}")
     total_start = time.time()
 
+    all_sequences = []          # 收集每个视频的有效骨架序列，最后统一切窗
+
     for i, video_path in enumerate(videos, 1):
-        #进度
+        # 进度
         print(f"\n[{i}/{len(videos)}] 处理: {os.path.basename(video_path)}")
         processor = VideoProcessor(video_path, output_dir=output_dir, show_video=SHOW_VIDEO)
         start = time.time()
         processor.generate_video()
         print(f"[{i}/{len(videos)}] 耗时: {show_time(start, time.time())}")
+
+        if ENABLE_SLIDING_WINDOW:
+            seq = processor.get_valid_keypoint_sequence()
+            all_sequences.append((processor.video_name, seq))
+
+    if ENABLE_SLIDING_WINDOW:
+        build_window_dataset(all_sequences,
+                            window_size=WINDOW_SIZE,
+                            stride=STRIDE,
+                            save_path=WINDOW_SAVE_PATH)
 
     print(f"\n全部完成，总耗时: {show_time(total_start, time.time())}")

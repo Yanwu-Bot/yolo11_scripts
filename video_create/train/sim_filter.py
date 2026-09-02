@@ -170,7 +170,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     #根据选择模型更换存储路径
     if select == 'STGCN':
         save_dir = 'D:/Dataset/sprint/result/model/ST-GCN'
-        MODEL_SAVE_N = 'best_7_1_stgcn.pth'
+        MODEL_SAVE_N = 'best_9_2_stgcn.pth'
         model = module.STGCNEncoder(output_dim=64).to(device)
     elif select == 'GRU':
         save_dir = 'D:/Dataset/sprint/result/model/GRU'
@@ -293,15 +293,15 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
 
 if __name__ == '__main__':
     start_time = time.time()
-    npz_path = 'result/GCN/dataset/dataset_7_1.npz'
+    npz_path = 'D:/Dataset/sprint/result/window_data/dataset_9_2.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
-        window_size=7,
+        window_size=9,
         transform_params={'rotation':15, 'scale':0.15, 'noise':0.05, 'mask':0.1,
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
 
-    train_contrastive(dataset, epochs=100, batch_size=128, lr=0.001, temperature=0.1, diversity_threshold=0.9,
+    train_contrastive(dataset, epochs=150, batch_size=128, lr=0.001, temperature=0.2, diversity_threshold=0.9,
                     select='STGCN')  #输入想使用的模型
     """
     STGCN,GRU,LSTM,MLP,TCN,Trans

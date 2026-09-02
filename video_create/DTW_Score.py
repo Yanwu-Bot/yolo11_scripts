@@ -17,7 +17,7 @@ from AcDTW import acdtw
 
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-WINDOWSIZE = 7 #窗口大小
+WINDOWSIZE = 9 #窗口大小
 MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_7_1_f.pth'
 #评分类
 class VideoScoreEvaluator:
@@ -79,7 +79,7 @@ class VideoScoreEvaluator:
         self.template_video_path = os.path.join(self.video_dir, template_video)
         self.test_video_path = os.path.join(self.video_dir, test_video)
     
-    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.075, k: float = 4) -> float:
+    def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray, t: float = 0.05, k: float = 4) -> float:
         f_weights = np.array(self.feature_weights) / np.sum(self.feature_weights)
         q = np.abs(test_feat - template_feat)
         q_mean = np.sum(q * f_weights)
@@ -90,7 +90,7 @@ class VideoScoreEvaluator:
             score = 100 * np.exp(-k * exceed)
         return score
 
-    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=150 , k = 4) -> tuple:
+    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=160 , k = 4) -> tuple:
         body_indices = list(range(5, 17))  # 14个关键点
         test_body = test_points[body_indices]
         template_body = template_points[body_indices]
@@ -102,7 +102,7 @@ class VideoScoreEvaluator:
             score = 100 * np.exp(-k * exceed)
         return score, dist
 
-    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.025, k: float = 4) -> float:
+    def calculate_displacement_frame_score(self, test_vec: np.ndarray, template_vec: np.ndarray, t: float = 0.02, k: float = 4) -> float:
         q = np.abs(test_vec - template_vec)
         q_mean = np.mean(q)
         exceed = q_mean - t
@@ -205,7 +205,7 @@ class VideoScoreEvaluator:
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if select == 'STGCN':
-                MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_7_1_stgcn.pth'
+                MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_9_2_stgcn.pth'
                 model = module.STGCNEncoder(output_dim=64).to(device)
                 model.load_state_dict(torch.load(MODEL, map_location=device))
             elif select == 'GRU':
@@ -463,18 +463,18 @@ def visualize_dtw_path(evaluator):
 
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
-        template_video='run_5.mp4',
-        test_video='run_13.mp4',
+        template_video='run_6.mp4',
+        test_video='run_10.mp4',
         features_dir='D:/Dataset/sprint/result/features',
         video_dir='D:/Dataset/sprint/Whole',
-        weight={"fea": 0.6, "point": 0.2, "displacement": 0.2},
+        weight={"fea": 0.7, "point": 0.2, "displacement": 0.1},
         output_dir='result/plots'
     )
     """输入想使用的模型"""
     evaluator.score_video('STGCN')
 
     visualize_dtw_path(evaluator) 
-    VIEW_FRAME = 203
+    VIEW_FRAME = 200
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
     # 可视化第i个窗口

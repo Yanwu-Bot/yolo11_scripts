@@ -68,7 +68,8 @@ class SpatialGraphConvolution(nn.Module):
         return x.contiguous()
 
 class STGC_block(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size, dropout=0.2):
+    def __init__(self, in_channels, out_channels, stride, t_kernel_size, A_size,
+                 dropout=0.2, dilation=1):
         super().__init__()
         self.sgc = SpatialGraphConvolution(in_channels, out_channels, A_size[0])
         self.M = nn.Parameter(torch.ones(A_size))          # 可学习缩放
@@ -77,11 +78,13 @@ class STGC_block(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Conv2d(out_channels, out_channels, (t_kernel_size,1), (stride,1),
-                    ((t_kernel_size-1)//2, 0)),
+            nn.Conv2d(out_channels, out_channels, (t_kernel_size, 1), (stride, 1),
+                      ((t_kernel_size - 1) // 2 * dilation, 0),   # padding 随 dilation 放大
+                      dilation=(dilation, 1)),
             nn.BatchNorm2d(out_channels),
             nn.ReLU()
         )
+
     def forward(self, x, A):
         return self.tgc(self.sgc(x, A * self.M + self.B))
 
@@ -122,38 +125,48 @@ class STGCNEncoder1(nn.Module):
         return F.normalize(x, dim=1)
 
 class STGCNEncoder(nn.Module):
-    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=128):
+    def __init__(self, in_channels=2, t_kernel_size=3, hop_size=2, output_dim=64):
         super().__init__()
         graph = COCOGraph(hop_size)
         A = torch.tensor(graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
         A_size = A.size()
         self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
-        self.stgc1 = STGC_block(in_channels, 16, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc2 = STGC_block(16, 32, 1, t_kernel_size, A_size, dropout=0.1)
-        self.stgc3 = STGC_block(32, 64, 1, t_kernel_size, A_size, dropout=0.1)
-
-        # self.eadm = EADM(drop_ratio=0.2)
+        # 时序感受野: RF = 1 + (3-1) * (1+1+2) = 9，正好覆盖9帧
+        self.stgc1 = STGC_block(in_channels, 16, 1, t_kernel_size, A_size,
+                                dropout=0.1, dilation=1)
+        self.stgc2 = STGC_block(16, 32, 1, t_kernel_size, A_size,
+                                dropout=0.1, dilation=1)
+        self.stgc3 = STGC_block(32, 64, 1, t_kernel_size, A_size,
+                                dropout=0.1, dilation=2)
+        # 方案B：时间注意力池化（输入是stgc3输出，128通道）
+        self.att_fc = nn.Linear(64, 1)
+        nn.init.constant_(self.att_fc.bias, 0.0)   # 初始≈平均池化，更稳
+        # 64维输出
         self.projection = nn.Sequential(
             nn.Linear(64, 64),
-            nn.BatchNorm1d(64),  
-            nn.Dropout(0.2),           
+            nn.BatchNorm1d(64),
+            nn.Dropout(0.2),
             nn.ReLU(),
             nn.Linear(64, output_dim)
         )
     def forward(self, x):
+        # 输入: (N, C, T, V)，T=9，V=17
         N, C, T, V = x.size()
-        x = x.permute(0,3,1,2).contiguous().view(N, V*C, T)
+        x = x.permute(0, 3, 1, 2).contiguous().view(N, V * C, T)
         x = self.bn(x)
-        x = x.view(N, V, C, T).permute(0,2,3,1).contiguous()
+        x = x.view(N, V, C, T).permute(0, 2, 3, 1).contiguous()
         x = self.stgc1(x, self.A)
         x = self.stgc2(x, self.A)
-        x = self.stgc3(x, self.A)
-        # x = self.eadm(x)
-        x = F.adaptive_avg_pool2d(x, (1,1)).view(N, -1)
-        x = self.projection(x)
-        return F.normalize(x, dim=1)
-
+        x = self.stgc3(x, self.A)          # (N, 128, 9, 17)
+        # 空间池化（平均17个关节），保留时间维
+        x = x.mean(dim=3)                  # (N, 128, 9)
+        # 时间注意力池化
+        att = torch.sigmoid(self.att_fc(x.permute(0, 2, 1)))  # (N, 9, 1)
+        att = att.permute(0, 2, 1)         # (N, 1, 9)
+        x = (x * att).sum(dim=2)           # (N, 128)
+        x = self.projection(x)             # (N, 64)
+        return F.normalize(x, dim=1)       # L2归一化，用于余弦相似度
 
 class MLPEncoder(nn.Module):
     """
