@@ -262,13 +262,12 @@ def save_video_keypoint_sequences(video_source, output_dir,
     将一个视频/一个文件夹里的所有视频，保存为整段关键点序列数据集。
 
     参数:
-      video_source:  视频文件路径 或 视频文件夹路径
-      output_dir:    输出目录
-      normalize:     是否做躯干归一化（髋中心平移 + 躯干长度缩放）
-      fix_keypoints: 是否做角度/距离修正
-      add_velocity:  是否拼接速度通道 (C: 2 → 4)
-      min_frames:    有效帧数少于该值的视频被跳过
-
+    video_source:  视频文件路径 或 视频文件夹路径
+    output_dir:    输出目录
+    normalize:     是否做躯干归一化（髋中心平移 + 躯干长度缩放）
+    fix_keypoints: 是否做角度/距离修正
+    add_velocity:  是否拼接速度通道 (C: 2 → 4)
+    min_frames:    有效帧数少于该值的视频被跳过
     输出:
       output_dir/
         run_2.npy              # (T, 17, C) 整段关键点

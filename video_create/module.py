@@ -311,94 +311,107 @@ class GRUEncoder(nn.Module):
         x = self.projection(x)
         return F.normalize(x, dim=1)
 
-class SkeletonTransformerBlock(nn.Module):
+class CTRGC(nn.Module):
     """
-    单层 Transformer 块。
-    关键：在自注意力分数上加入【骨骼图距离偏置】。
-    对每对关节 (i, j)，根据 hop_dis[i][j]（0/1/2/>=3）查表得到一个可学习偏置，
-    直接加到注意力分数上（softmax 之前），实现“骨骼连接先验注入”。
+    对齐官方 CTR-GCN 的核心机制：
+    对每个通道 c 和每个 hop k，都生成一张自己的精炼邻接图
+        A_refined[k,c] = A[k] + P[k] + alpha[k] * corr[c]
+    其中 corr[c] 由输入特征的双分支相关性生成。
     """
-    def __init__(self, d_model, nhead, dim_feedforward, dropout, num_hop=4):
+    def __init__(self, in_channels, out_channels, A_shape):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
+        self.K, self.V = A_shape[0], A_shape[1]   # K=3(hop), V=17
+        self.out_channels = out_channels
+        # 特征变换：输出 K*C'，供每个 hop 用一份
+        self.conv = nn.Conv2d(in_channels, out_channels * self.K, 1)
+        # 双分支：生成通道相关性
+        self.conv_a = nn.Conv2d(in_channels, out_channels, 1)
+        self.conv_b = nn.Conv2d(in_channels, out_channels, 1)
+        # 可学习拓扑残差（叠加在基础 A 上）
+        self.P = nn.Parameter(torch.zeros(self.K, self.V, self.V))
+        # 每个 hop 的缩放系数
+        self.alpha = nn.Parameter(torch.ones(self.K))
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+    def forward(self, x, A):
+        N, C, T, V = x.shape
+        # 1) 时间池化，得到 (N, C, 1, V)
+        xp = x.mean(dim=2, keepdim=True)
+        za = self.conv_a(xp).squeeze(2)          # (N, C', V)
+        zb = self.conv_b(xp).squeeze(2)          # (N, C', V)
+        # 2) 逐通道相关性图：每个通道 c 有自己的 V×V 精炼项
+        corr = torch.einsum('ncv,ncw->ncvw', za, zb)   # (N, C', V, V)
+        corr = torch.tanh(corr / (V ** 0.5))
+        # 3) 图卷积
+        x = self.conv(x)                         # (N, K*C', T, V)
+        x = x.view(N, self.K, self.out_channels, T, V)
+        out = 0
+        for k in range(self.K):
+            base = A[k] + self.P[k]              # (V, V)
+            # 每通道每hop的精炼图 (N, C', V, V)
+            refined = base.unsqueeze(0).unsqueeze(0) + self.alpha[k] * corr
+            # 每个通道用自己的图做卷积
+            out = out + torch.einsum('nctv,ncvw->nctw', x[:, k], refined)
+        return self.relu(self.bn(out))
+# ================= 干净的 TCN 残差块 =================
+class TCN_block(nn.Module):
+    def __init__(self, in_channels, out_channels, t_kernel_size=3, stride=1,
+                 dilation=1, dropout=0.2):
+        super().__init__()
+        self.tcn = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, d_model),
-            nn.Dropout(dropout)
-        )
-        self.dropout = nn.Dropout(dropout)
-        # 4 档跳数对应的可学习偏置：0(自身), 1(相邻), 2(二阶), 3(更远)
-        self.graph_bias_param = nn.Parameter(torch.zeros(num_hop))
-
-    def forward(self, x, hop_idx):
-        # hop_idx: (V, V) int64，表示关节对之间的跳数类别
-        graph_bias = self.graph_bias_param[hop_idx]   # (V, V) 加法偏置
-        attn_out, _ = self.self_attn(x, x, x, attn_mask=graph_bias, need_weights=False)
-        x = x + self.dropout(attn_out)
-        x = self.norm1(x)
-        x = x + self.ffn(x)
-        x = self.norm2(x)
-        return x
-
-class SkeletonTransformerEncoder(nn.Module):
-    """
-    带骨骼结构先验的 Transformer 编码器。
-
-    token 化方式：每个关节点 = 1 个 token。
-    - 输入 (N, C, T, V)
-    - 变换为 (N, V, T, C)，每个关节 token 的特征是它所有时间帧的坐标 (T*C 维)
-    - 加【时间位置编码】保留时序
-    - 线性映射到 d_model
-    - 加【关节位置编码】保留关节身份
-    - 多层自注意力，注意力分数带【骨骼图距离偏置】
-    - 对 V 个关节 token 做平均池化 -> 投影 -> L2 归一化
-    """
-    def __init__(self, in_channels=2, window_size=7, num_joints=17, hop_size=2,
-                d_model=128, nhead=4, num_layers=2, dim_feedforward=256,
-                output_dim=64, dropout=0.2):
-        super().__init__()
-        self.window_size = window_size
-        self.num_joints = num_joints
-        graph = COCOGraph(hop_size)
-        # 把 hop_dis 离散为 0/1/2/>=3 四类
-        hop_dis = graph.hop_dis
-        hop_cat = np.where(hop_dis < 3.0, hop_dis, 3.0).astype(np.int64)
-        self.register_buffer('hop_idx', torch.from_numpy(hop_cat))   # (V, V)
-
-        self.token_dim = in_channels * window_size                    # 2*7 = 14
-        self.embed = nn.Linear(self.token_dim, d_model)
-        # 时间位置编码：(1, 1, T, C)
-        self.temporal_pos_embed = nn.Parameter(torch.randn(1, 1, window_size, in_channels) * 0.02)
-        # 关节位置编码：(1, V, d_model)
-        self.joint_pos_embed = nn.Parameter(torch.randn(1, num_joints, d_model) * 0.02)
-
-        self.blocks = nn.ModuleList([
-            SkeletonTransformerBlock(d_model, nhead, dim_feedforward, dropout, num_hop=4)
-            for _ in range(num_layers)
-        ])
-        self.norm = nn.LayerNorm(d_model)
-        self.projection = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Conv2d(in_channels, out_channels, (t_kernel_size, 1), (stride, 1),
+                      ((t_kernel_size - 1) // 2 * dilation, 0),
+                      dilation=(dilation, 1)),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, output_dim)
         )
-
+        self.residual = None
+        if in_channels != out_channels or stride != 1:
+            self.residual = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=(stride, 1)),
+                nn.BatchNorm2d(out_channels),
+            )
     def forward(self, x):
-        # x: (N, C, T, V)
-        N, C, T, V = x.size()
-        x = x.permute(0, 3, 2, 1)            # (N, V, T, C)
-        x = x + self.temporal_pos_embed      # 加时间位置编码（广播）
-        x = x.reshape(N, V, T * C)           # (N, V, 14)
-        x = self.embed(x)                    # (N, V, d_model)
-        x = x + self.joint_pos_embed         # 加关节位置编码
-        for block in self.blocks:
-            x = block(x, self.hop_idx)
-        x = self.norm(x)
-        x = x.mean(dim=1)                    # 关节 token 平均池化 -> (N, d_model)
+        res = x if self.residual is None else self.residual(x)
+        return self.tcn(x) + res
+# ================= 编码器：输入 (N,2,9,17) → 输出 (N,64) =================
+class CTRGCNEncoder(nn.Module):
+    def __init__(self, in_channels=2, output_dim=64, t_kernel_size=3, hop_size=2):
+        super().__init__()
+        graph = COCOGraph(hop_size)                    # 用你现有的 COCOGraph（17点）
+        A = torch.tensor(graph.A, dtype=torch.float32)
+        self.register_buffer('A', A)                   # (3, 17, 17)
+        self.bn = nn.BatchNorm1d(in_channels * graph.num_node)
+        # 感受野: dilation 1,1,2 → RF = 1+2*(1+1+2) = 9，匹配9帧
+        self.gc1 = CTRGC(in_channels, 16, A.shape)
+        self.tcn1 = TCN_block(16, 16, t_kernel_size, 1, dilation=1)
+        self.gc2 = CTRGC(16, 32, A.shape)
+        self.tcn2 = TCN_block(32, 32, t_kernel_size, 1, dilation=1)
+        self.gc3 = CTRGC(32, 64, A.shape)
+        self.tcn3 = TCN_block(64, 64, t_kernel_size, 1, dilation=2)
+        # 时间注意力池化
+        self.att_fc = nn.Linear(64, 1)
+        nn.init.constant_(self.att_fc.bias, 0.0)
+        # 64维输出
+        self.projection = nn.Sequential(
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim),
+        )
+    def forward(self, x):
+        N, C, T, V = x.shape
+        x = x.permute(0, 3, 1, 2).contiguous().view(N, V * C, T)
+        x = self.bn(x)
+        x = x.view(N, V, C, T).permute(0, 2, 3, 1).contiguous()
+        x = self.tcn1(self.gc1(x, self.A))    # (N,16,9,17)
+        x = self.tcn2(self.gc2(x, self.A))    # (N,32,9,17)
+        x = self.tcn3(self.gc3(x, self.A))    # (N,64,9,17)
+        x = x.mean(dim=3)                     # 空间平均 → (N,64,9)
+        att = torch.sigmoid(self.att_fc(x.permute(0, 2, 1)))  # (N,9,1)
+        att = att.permute(0, 2, 1)            # (N,1,9)
+        x = (x * att).sum(dim=2)              # (N,64)
         x = self.projection(x)
-        return F.normalize(x, dim=1)
+        return F.normalize(x, p=2, dim=1)

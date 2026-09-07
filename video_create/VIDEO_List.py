@@ -437,11 +437,6 @@ class VideoProcessor:
         print(f"所有特征已保存至 {out_dir}")
 
     def get_valid_keypoint_sequence(self):
-        """
-        返回本视频过滤掉无效帧(全零行)后的归一化骨架序列 (T,17,2)。
-        语义与 Dataset_create 的“检测不到人就跳过该帧”对齐：
-        VIDEO_List 对无人帧写入的是全零 (17,2) 行，切窗前必须剔除。
-        """
         if not self.all_normalized_points:
             return None
         arr = np.stack(self.all_normalized_points, axis=0)   # (T,17,2)
@@ -449,7 +444,35 @@ class VideoProcessor:
         mask = np.any(flat != 0, axis=1)                     # 整帧 34 个值全 0 → 无效帧
         seq = arr[mask]
         return seq.astype(np.float32) if len(seq) > 0 else None
+    @staticmethod
+    def feature_files_exist(video_name, output_dir):
+        """
+        判断该视频特征是否已完整生成。
+        必须 normalized_points 和 features 两个文件都存在才算完成，
+        避免中途崩溃只剩一半文件时被误判为“已生成”。
+        """
+        feat_dir = os.path.join(output_dir, "features")
+        norm_path = os.path.join(feat_dir, f"{video_name}_normalized_points.npy")
+        feat_path = os.path.join(feat_dir, f"{video_name}_features.npy")
+        return os.path.exists(norm_path) and os.path.exists(feat_path)
 
+    @staticmethod
+    def load_valid_keypoint_sequence(video_name, output_dir):
+        path = os.path.join(output_dir, "features", f"{video_name}_normalized_points.npy")
+        if not os.path.exists(path):
+            return None
+        try:
+            arr = np.load(path)
+            if arr.ndim != 3 or arr.shape[1:] != (17, 2):
+                return None
+            flat = arr.reshape(arr.shape[0], -1)
+            mask = np.any(flat != 0, axis=1)      # 整帧 34 个值全 0 → 无效帧
+            seq = arr[mask]
+            return seq.astype(np.float32) if len(seq) > 0 else None
+        except Exception as e:
+            print(f"读取 {path} 失败: {e}")
+            return None
+        
     def generate_video(self):
         cap = cv2.VideoCapture(self.input_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -543,6 +566,7 @@ if __name__ == '__main__':
     SHOW_VIDEO = False                          # True=显示预览窗口，False=不显示
 
     ENABLE_SLIDING_WINDOW = True
+    SKIP_EXISTING_FEATURES = True   # True=特征已生成则跳过该视频
     WINDOW_SIZE = 9
     STRIDE = 2
     WINDOW_SAVE_PATH = 'D:/Dataset/sprint/result/window_data/dataset_9_2.npz'
@@ -562,6 +586,16 @@ if __name__ == '__main__':
     for i, video_path in enumerate(videos, 1):
         # 进度
         print(f"\n[{i}/{len(videos)}] 处理: {os.path.basename(video_path)}")
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+
+        # 新增条件：该视频特征已生成，则不再重复提取，直接跳过
+        if SKIP_EXISTING_FEATURES and VideoProcessor.feature_files_exist(video_name, output_dir):
+            print(f"    特征已存在，跳过 {video_name}")
+            if ENABLE_SLIDING_WINDOW:
+                seq = VideoProcessor.load_valid_keypoint_sequence(video_name, output_dir)
+                all_sequences.append((video_name, seq))
+            continue
+
         processor = VideoProcessor(video_path, output_dir=output_dir, show_video=SHOW_VIDEO)
         start = time.time()
         processor.generate_video()
@@ -570,7 +604,7 @@ if __name__ == '__main__':
         if ENABLE_SLIDING_WINDOW:
             seq = processor.get_valid_keypoint_sequence()
             all_sequences.append((processor.video_name, seq))
-
+            
     if ENABLE_SLIDING_WINDOW:
         build_window_dataset(all_sequences,
                             window_size=WINDOW_SIZE,

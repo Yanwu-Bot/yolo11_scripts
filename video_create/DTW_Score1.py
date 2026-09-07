@@ -1,4 +1,4 @@
-#可用
+# DTW_Score.py (改用窗口距离修正)
 import cv2
 import numpy as np
 import matplotlib
@@ -17,9 +17,8 @@ from AcDTW import acdtw
 
 rcParams['font.family'] = 'SimHei'
 matplotlib.use('TkAgg')
-WINDOWSIZE = 9 #窗口大小
-MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_7_1_f.pth'
-#评分类
+WINDOWSIZE = 9
+
 class VideoScoreEvaluator:
     def __init__(self, 
                 template_video: str = None,
@@ -35,19 +34,17 @@ class VideoScoreEvaluator:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.weight = weight if weight else {"fea": 0.5, "point": 0.3, "displacement": 0.2}
-        #角度特征
+
+        # 角度特征权重
         self.angle_weights = [1] * 4 + [1] * 4 + [1.6] * 4 + [1.2] * 4
-        #四肢中心点位置
         self.center_weights = [1] * 4
-        #身体前倾角度
         self.orientation_weight = [1.1]
-        #两脚间距
         self.feet_distance_weight = [1.2]
-        #四肢相对躯干位移
         self.phase_weights = [0.9] * 4
         self.feature_weights = (self.angle_weights + self.center_weights + 
                                 self.orientation_weight + self.feet_distance_weight + 
                                 self.phase_weights)
+
         self.feat_score = None
         self.point_score = None
         self.displacement_score = None
@@ -66,19 +63,18 @@ class VideoScoreEvaluator:
             self.set_videos(template_video, test_video)
 
         self.window = WINDOWSIZE
-        self.mu =None
+        self.mu = None
         self.sigma = None
-
         self.kps1 = []
         self.kps2 = []
-        self.window_sim_scores = None  # 保存每个窗口的ST-GCN相似度得分
+        self.window_dist_scores = None   # 保存每个窗口的特征距离
 
     def set_videos(self, template_video: str, test_video: str):
         self.template_video = template_video
         self.test_video = test_video
         self.template_video_path = os.path.join(self.video_dir, template_video)
         self.test_video_path = os.path.join(self.video_dir, test_video)
-    
+
     def calculate_frame_score(self, test_feat: np.ndarray, template_feat: np.ndarray,
                             t: float = 0.05, k: float = 4) -> float:
         f_weights = np.array(self.feature_weights, dtype=float)
@@ -86,7 +82,7 @@ class VideoScoreEvaluator:
 
         # 重点四肢角度维：肘/膝屈伸角，索引 8~11
         key = np.arange(8, 12)
-        enhance = 1.0 + 2.0 * q[key]        # q=0 → ×1；q=0.5 → ×2；q=1 → ×3
+        enhance = 1.0 + 2.0 * q[key]
         w = f_weights.copy()
         w[key] = w[key] * enhance
 
@@ -97,8 +93,8 @@ class VideoScoreEvaluator:
             return 100.0
         return 100 * np.exp(-k * exceed)
 
-    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=160 , k = 4) -> tuple:
-        body_indices = list(range(5, 17))  # 14个关键点
+    def calculate_keypoint_frame_score(self, test_points: np.ndarray, template_points: np.ndarray, threshold=160, k=4) -> tuple:
+        body_indices = list(range(5, 17))
         test_body = test_points[body_indices]
         template_body = template_points[body_indices]
         dist = np.linalg.norm(test_body - template_body)
@@ -122,69 +118,65 @@ class VideoScoreEvaluator:
     def calculate_video_score(self, test_features: np.ndarray, template_features: np.ndarray) -> np.ndarray:
         def med_dist(tf, pf):
             score = self.calculate_frame_score(tf, pf, t=0.05, k=4)
-            return max(0.0, 100.0 - score)   # 距离越小越好
+            return max(0.0, 100.0 - score)
         path, med_mat, tp, tq = acdtw(
             test_features,
             template_features,
             dist_func=med_dist,
-            window=None,   # 也可设置 Sakoe-Chiba band，例如 20
+            window=None,
         )
         self.path = path
         print(f"ACDTW对齐完成: 路径长度 = {len(path)}")
         return path
 
-    def compute_pairwise_scores(self, path: np.ndarray, use_window=True,select='STGCN'):
-        #导入特征文件
+    def compute_pairwise_scores(self, path: np.ndarray, use_window=True, select='STGCN'):
+        # 载入手工特征
         template_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_features.npy")
         test_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_features.npy")
         template_features = np.load(template_feat_path)
         test_features = np.load(test_feat_path)
-        #导入关键点文件
+
+        # 载入关键点
         template_point_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_normalized_points.npy")
         test_point_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_normalized_points.npy")
-        #关键点重新排序
-        if os.path.exists(template_point_path) and os.path.exists(test_point_path):
-            template_points = np.load(template_point_path)
-            test_points = np.load(test_point_path)
-            self.kps1 = template_points.tolist()
-            self.kps2 = test_points.tolist()
-            if len(template_points.shape) == 3 and template_points.shape[2] == 3:
-                template_points = template_points[:, :, :2]
-            if len(test_points.shape) == 3 and test_points.shape[2] == 3:
-                test_points = test_points[:, :, :2]
-            # 利用 path 生成对齐后的关键点序列
-            self.kps1 = [self.kps1[idx] for idx in path[:, 1]]  
-            self.kps2 = [self.kps2[idx] for idx in path[:, 0]]  
-        else:
-            print("\nPOINT ERR")
-        #导入向量文件
+        template_points = np.load(template_point_path)
+        test_points = np.load(test_point_path)
+
+        # 只保留xy
+        if len(template_points.shape) == 3 and template_points.shape[2] == 3:
+            template_points = template_points[:, :, :2]
+        if len(test_points.shape) == 3 and test_points.shape[2] == 3:
+            test_points = test_points[:, :, :2]
+
+        # 对齐后的关键点序列（用numpy索引，避免原list自引用混乱）
+        self.kps1 = template_points[path[:, 1]].tolist()
+        self.kps2 = test_points[path[:, 0]].tolist()
+
+        # 载入向量
         template_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_vector.npy")
         test_vector_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_vector.npy")
-
         if os.path.exists(template_vector_path) and os.path.exists(test_vector_path):
             template_vector = np.load(template_vector_path)
             test_vector = np.load(test_vector_path)
         else:
             print("\nVEC ERR")
 
-        # 逐对计算得分
-        frame_scores = []           # 特征得分
+        # 逐帧得分
+        frame_scores = []
         point_frame_scores = []
         displacement_frame_scores = []
         point_distances = []
 
-        #计算各个特征各个对应得分
         for test_idx, template_idx in path:
             test_frame = test_features[test_idx]
             template_frame = template_features[template_idx]
-            score = self.calculate_frame_score(test_frame, template_frame)
-            frame_scores.append(score)
+            frame_scores.append(self.calculate_frame_score(test_frame, template_frame))
 
             test_point_frame = test_points[test_idx]
             template_point_frame = template_points[template_idx]
@@ -199,9 +191,8 @@ class VideoScoreEvaluator:
             else:
                 test_vec_frame = test_vector[test_idx]
                 template_vec_frame = template_vector[template_idx]
-            displacement_score = self.calculate_displacement_frame_score(
-                test_vec_frame, template_vec_frame)
-            displacement_frame_scores.append(displacement_score)
+            displacement_frame_scores.append(self.calculate_displacement_frame_score(
+                test_vec_frame, template_vec_frame))
 
         self.frame_scores = frame_scores
         self.point_frame_scores = point_frame_scores
@@ -211,32 +202,34 @@ class VideoScoreEvaluator:
         # 窗口聚合
         if use_window and self.window > 0:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            # 模型加载
+            model = None
             if select == 'STGCN':
-                MODEL = 'D:/Dataset/sprint/result/model/ST-GCN/best_9_2_stgcn.pth'
+                model_path = 'D:/Dataset/sprint/result/model/ST-GCN/best_9_2_stgcn.pth'
                 model = module.STGCNEncoder(output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))
             elif select == 'GRU':
-                MODEL = 'D:/Dataset/sprint/result/model/GRU/best_7_1_gru.pth' 
+                model_path = 'D:/Dataset/sprint/result/model/GRU/best_7_1_gru.pth'
                 model = module.GRUEncoder(output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))  
             elif select == 'LSTM':
-                MODEL = 'D:/Dataset/sprint/result/model/LSTM/best_7_1_lstm.pth'                 
+                model_path = 'D:/Dataset/sprint/result/model/LSTM/best_7_1_lstm.pth'
                 model = module.LSTMEncoder(output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))  
             elif select == 'MLP':
-                MODEL = 'D:/Dataset/sprint/result/model/MLP/best_7_1_mlp.pth'
+                model_path = 'D:/Dataset/sprint/result/model/MLP/best_7_1_mlp.pth'
                 model = module.MLPEncoder(output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))
             elif select == 'CTR':
-                MODEL = 'D:/Dataset/sprint/result/model/CTR-GCN/best_7_1_ctr.pth'
+                model_path = 'D:/Dataset/sprint/result/model/CTR-GCN/best_7_1_ctr.pth'
                 model = module.CTRGCNEncoder(in_channels=2, output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))
-            if select == 'TCN':
-                MODEL = 'D:/Dataset/sprint/result/model/TCN/best_7_1_tcn.pth'                
+            elif select == 'TCN':
+                model_path = 'D:/Dataset/sprint/result/model/TCN/best_7_1_tcn.pth'
                 model = module.TCNEncoder(output_dim=64).to(device)
-                model.load_state_dict(torch.load(MODEL, map_location=device))
-            # 记录窗口相似度得分
-            self.window_sim_scores = compare_videos(self.kps1, self.kps2, model, device, self.window) #同序列窗口进行相似度比对
+            else:
+                raise ValueError(f"Unknown model: {select}")
+            model.load_state_dict(torch.load(model_path, map_location=device))
+
+            # 关键：计算窗口特征距离
+            self.window_dist_scores = compare_videos(self.kps1, self.kps2, model, device, self.window)
+
             L = len(path)
             window_fea_scores = []
             window_point_scores = []
@@ -248,13 +241,10 @@ class VideoScoreEvaluator:
                 win_point = point_frame_scores[start:end] if point_frame_scores else []
                 win_disp = displacement_frame_scores[start:end] if displacement_frame_scores else []
 
-                avg_fea = np.mean(win_fea) if win_fea else 0.0
-                avg_point = np.mean(win_point) if win_point else 0.0
-                avg_disp = np.mean(win_disp) if win_disp else 0.0
+                window_fea_scores.append(np.mean(win_fea) if win_fea else 0.0)
+                window_point_scores.append(np.mean(win_point) if win_point else 0.0)
+                window_disp_scores.append(np.mean(win_disp) if win_disp else 0.0)
 
-                window_fea_scores.append(avg_fea)
-                window_point_scores.append(avg_point)
-                window_disp_scores.append(avg_disp)
             self.mu_sigma(window_fea_scores, window_point_scores, window_disp_scores)
 
             self.feat_score = np.mean(window_fea_scores) if window_fea_scores else 0.0
@@ -268,49 +258,60 @@ class VideoScoreEvaluator:
             }
 
     def mu_sigma(self, fea, point, vec):
-        scores = []
-        if len(fea) == len(point) == len(vec):
-            length = len(fea)
-            for i in range(length):
-                score = self.weight['fea'] * fea[i] + \
-                        self.weight['point'] * point[i] + \
-                        self.weight['displacement'] * vec[i]
-                scores.append(score)
-            scores = np.array(scores)
-            self.window_sim_scores = np.array(self.window_sim_scores) 
+        if not (len(fea) == len(point) == len(vec)):
+            print("Error: window score lengths mismatch")
+            return
 
-            #最终得分计算，结合相似度
-            alpha = 0.2  # 可调
-            scores = scores * (1 - alpha * (1 - self.window_sim_scores))
+        length = len(fea)
+        scores = np.array([
+            self.weight['fea'] * f + self.weight['point'] * p + self.weight['displacement'] * v
+            for f, p, v in zip(fea, point, vec)
+        ])
+
+        # 窗口距离惩罚
+        distances = np.array(self.window_dist_scores)
+        # 确保距离数组长度匹配，若不匹配则截断或补零
+        if len(distances) < length:
+            distances = np.pad(distances, (0, length - len(distances)), mode='edge')
+        elif len(distances) > length:
+            distances = distances[:length]
+
+        # 距离越大惩罚越大（距离范围由特征距离决定，一般0~2）
+        # 归一化距离到 0~1
+        max_dist = 2.0  # L2归一化后欧氏距离最大为2
+        norm_dist = np.clip(distances / max_dist, 0.0, 1.0)
+
+        alpha = 0.2
+        scores = scores * (1 - alpha * norm_dist)
+
+        # 与原逻辑一致，删除最后一个窗口分数（如果存在）
+        if len(scores) > 1:
             scores = np.delete(scores, -1)
-            self.mu = scores.mean()
 
-            diff = scores - self.mu
-            total = np.sum(diff ** 2)
-            self.sigma = math.sqrt(total / (length - 1)) if length > 1 else 0.0
-            self.sigma = self.sigma / math.sqrt(length)
-            self.lower_bound = max(0, self.mu - 1.96 * self.sigma)
-            self.upper_bound = min(100, self.mu + 1.96 * self.sigma)
-        else:
-            print("Error")
+        self.mu = float(np.mean(scores))
+        diff = scores - self.mu
+        variance = np.mean(diff ** 2)
+        self.sigma = math.sqrt(variance) / math.sqrt(len(scores)) if len(scores) > 1 else 0.0
+        self.lower_bound = max(0, self.mu - 1.96 * self.sigma)
+        self.upper_bound = min(100, self.mu + 1.96 * self.sigma)
 
-    def score_video(self,sel='STGCN') -> tuple:
+    def score_video(self, sel='STGCN'):
         template_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.template_video)[0]}_features.npy")
         test_feat_path = os.path.join(self.features_dir, 
                                         f"{os.path.splitext(self.test_video)[0]}_features.npy")
         if not os.path.exists(template_feat_path) or not os.path.exists(test_feat_path):
             print("错误: 找不到特征文件")
-            return None, None, None, None, None, None, None, None
-        
+            return
+
         self.template_features = np.load(template_feat_path)
         self.test_features = np.load(test_feat_path)
         print(f"\n模板视频帧数: {self.template_features.shape[0]}")
         print(f"测试视频帧数: {self.test_features.shape[0]}")
-        
+
         path = self.calculate_video_score(self.test_features, self.template_features)
-        self.compute_pairwise_scores(path, use_window=True,select=sel)
-        
+        self.compute_pairwise_scores(path, use_window=True, select=sel)
+
     def visualize_aligned_frames(self, pair_index: int):
         if self.path is None:
             print("没有对齐数据")
@@ -321,35 +322,42 @@ class VideoScoreEvaluator:
         if pair_index >= len(self.path):
             print(f"pair_index {pair_index} 超出范围 (最大 {len(self.path)-1})")
             return
+
         test_idx, template_idx = self.path[pair_index]
+
         cap = cv2.VideoCapture(self.test_video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, test_idx)
         ret, test_frame = cap.read()
         cap.release()
+
         cap = cv2.VideoCapture(self.template_video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, template_idx)
         ret, template_frame = cap.read()
         cap.release()
+
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
         test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
         template_frame_rgb = cv2.cvtColor(template_frame, cv2.COLOR_BGR2RGB)
+
         ax1.imshow(test_frame_rgb)
         score_text = f'\n得分: {self.frame_scores[pair_index]:.3f}' if self.frame_scores else ''
         ax1.set_title(f'测试视频 - 第{test_idx}帧{score_text}')
         ax1.axis('off')
+
         ax2.imshow(template_frame_rgb)
         ax2.set_title(f'模板视频 - 第{template_idx}帧')
         ax2.axis('off')
+
         plt.suptitle(f'DTW对齐对 #{pair_index}')
         plt.tight_layout()
         plt.show()
-    
+
     def get_combined_score(self) -> float:
         combined_score = (self.feat_score * self.weight['fea'] + 
                          self.point_score * self.weight['point'] +
                          self.displacement_score * self.weight['displacement'])
         return combined_score
-    
+
     def print_summary(self):
         print(f"\n{'='*60}")
         print(f"DTW对比结果 (窗口大小: {self.window})")
@@ -363,48 +371,51 @@ class VideoScoreEvaluator:
         if self.displacement_score is not None:
             print(f"位移得分: {self.displacement_score:.2f}")
         print(f"{'='*60}")
-        print(f"综合得分（窗口加权前）: {self.get_combined_score():.2f}")
-        print(f"综合得分（窗口加权后）: {self.mu:.2f}")
-        #print(f"得分区间: {self.lower_bound:.2f} --- {self.upper_bound:.2f}")
+        print(f"综合得分（窗口未修正）: {self.get_combined_score():.2f}")
+        print(f"综合得分（窗口距离修正后）: {self.mu:.2f}")
+        print(f"修正系数: alpha=0.2")
         print(f"评分权重: fea={self.weight['fea']}, point={self.weight['point']}, displacement={self.weight['displacement']}")
+        if self.window_dist_scores is not None:
+            print(f"窗口距离列表: {np.round(self.window_dist_scores, 4)}")
         print(f"{'='*60}")
-        print(self.window_sim_scores)
 
-#  窗口相似度对比
+
+# ===== 修改后的窗口比较：计算特征距离（越小越相似） =====
 def compare_videos(kps1, kps2, model, device, window_size):
     model.eval()
     arr1 = np.array(kps1, dtype=np.float32)  # (L, 17, 2)
-    arr2 = np.array(kps2, dtype=np.float32)  # (L, 17, 2)
-    L = len(arr1)  
-    scores = []
+    arr2 = np.array(kps2, dtype=np.float32)
+    L = len(arr1)
+    distances = []
 
     for start in range(0, L, window_size):
         end = min(start + window_size, L)
         win_len = end - start
-        win1 = np.zeros((window_size, 17, 2), dtype=np.float32) #创建全零数组
+        win1 = np.zeros((window_size, 17, 2), dtype=np.float32)
         win2 = np.zeros((window_size, 17, 2), dtype=np.float32)
-        win1[:win_len] = arr1[start:end] #填充数组，长度不够补0
+        win1[:win_len] = arr1[start:end]
         win2[:win_len] = arr2[start:end]
 
         def get_feature(arr_win):
-            tensor = torch.FloatTensor(arr_win).permute(2,0,1).unsqueeze(0).to(device)
+            tensor = torch.FloatTensor(arr_win).permute(2, 0, 1).unsqueeze(0).to(device)
             with torch.no_grad():
                 feat = model(tensor)
             return feat.cpu().numpy()[0]
 
-        feat1 = get_feature(win1) #对每个窗口取特征
+        feat1 = get_feature(win1)
         feat2 = get_feature(win2)
-        sim = np.dot(feat1, feat2)
-        score = (sim + 1) / 2 
-        factor = 1 + 0.3*(sim - 0.8)
-        score *= factor
-        scores.append(score)
-    return scores
 
-# 窗口可视化函数
+        # 特征已经L2归一化，欧氏距离范围0~2
+        dist = np.linalg.norm(feat1 - feat2)
+        distances.append(dist)
+
+    return distances
+
+
+# ===== 可视化窗口（显示距离） =====
 def visualize_window(evaluator, window_idx):
-    if evaluator.window_sim_scores is None or window_idx >= len(evaluator.window_sim_scores):
-        print(f"窗口索引 {window_idx} 超出范围 (共 {len(evaluator.window_sim_scores) if evaluator.window_sim_scores else 0} 个窗口)")
+    if evaluator.window_dist_scores is None or window_idx >= len(evaluator.window_dist_scores):
+        print(f"窗口索引 {window_idx} 超出范围")
         return
     if evaluator.path is None:
         print("没有路径数据")
@@ -414,9 +425,8 @@ def visualize_window(evaluator, window_idx):
     L = len(evaluator.path)
     start = window_idx * window_size
     end = min(start + window_size, L)
-    window_path = evaluator.path[start:end]  # (实际帧数, 2)
+    window_path = evaluator.path[start:end]
 
-    # 读取对应帧
     cap_t = cv2.VideoCapture(evaluator.template_video_path)
     cap_test = cv2.VideoCapture(evaluator.test_video_path)
 
@@ -424,14 +434,13 @@ def visualize_window(evaluator, window_idx):
     fig, axes = plt.subplots(2, n_frames, figsize=(3*n_frames, 6))
     if n_frames == 1:
         axes = axes.reshape(2, 1)
-    fig.suptitle(f'Window {window_idx} (ST-GCN Similarity: {evaluator.window_sim_scores[window_idx]:.2f})',
-                    fontsize=14)
+    fig.suptitle(f'Window {window_idx} (Distance: {evaluator.window_dist_scores[window_idx]:.4f})',
+                 fontsize=14)
 
     for i in range(n_frames):
-        t_idx = int(window_path[i, 1])   # 模板帧索引
-        test_idx = int(window_path[i, 0]) # 测试帧索引
+        t_idx = int(window_path[i, 1])
+        test_idx = int(window_path[i, 0])
 
-        # 模板帧
         cap_t.set(cv2.CAP_PROP_POS_FRAMES, t_idx)
         ret_t, frame_t = cap_t.read()
         if ret_t:
@@ -442,7 +451,6 @@ def visualize_window(evaluator, window_idx):
             axes[0, i].text(0.5, 0.5, 'missing', ha='center')
         axes[0, i].axis('off')
 
-        # 测试帧
         cap_test.set(cv2.CAP_PROP_POS_FRAMES, test_idx)
         ret_te, frame_te = cap_test.read()
         if ret_te:
@@ -457,6 +465,7 @@ def visualize_window(evaluator, window_idx):
     plt.show()
     cap_t.release()
     cap_test.release()
+
 
 def visualize_dtw_path(evaluator):
     if evaluator.path is None:
@@ -473,6 +482,7 @@ def visualize_dtw_path(evaluator):
     plt.legend()
     plt.show()
 
+
 if __name__ == '__main__':
     evaluator = VideoScoreEvaluator(
         template_video='run_6.mp4',
@@ -482,13 +492,16 @@ if __name__ == '__main__':
         weight={"fea": 0.7, "point": 0.15, "displacement": 0.15},
         output_dir='result/plots'
     )
-    """输入想使用的模型"""
+
     evaluator.score_video('CTR')
 
-    visualize_dtw_path(evaluator) 
+    visualize_dtw_path(evaluator)
+
     VIEW_FRAME = 180
     if evaluator.frame_scores and VIEW_FRAME < len(evaluator.frame_scores):
         evaluator.visualize_aligned_frames(VIEW_FRAME)
-    # 可视化第i个窗口
-    visualize_window(evaluator, window_idx=18)
+
+    if evaluator.window_dist_scores is not None and len(evaluator.window_dist_scores) > 18:
+        visualize_window(evaluator, window_idx=18)
+
     evaluator.print_summary()

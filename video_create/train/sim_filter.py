@@ -1,6 +1,7 @@
 #用于训练窗口相似度
 # ST_filter_fea.py
 # 增加了batch间距离过滤的ST-GCN与ST-GCN其他无异
+# 帧特征/距离均每次现算，不落盘；距离按当前 batch 现算，避免 NxN 全量矩阵
 import time
 import os
 import math
@@ -16,64 +17,72 @@ from Feature import Feature
 import module
 
 MODEL_SAVE_N = 'best_7_1_f.pth'
+SEED = 0
 
-def show_time(start_time,current_time):
-    start_time = time.localtime(start_time)
-    current_time = time.localtime(current_time)
-    tm_hour = current_time.tm_hour - start_time.tm_hour 
-    tm_min = current_time.tm_min - start_time.tm_min  
-    tm_sec = current_time.tm_sec - start_time.tm_sec 
-    time_string = f"{tm_hour}时{tm_min}分{tm_sec}秒"
-    return time_string
+def set_seed(seed):
+    global SEED
+    SEED = seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-def nt_xent_loss(z1, z2, temperature=0.5, raw_windows=None, batch_indices=None,
-                threshold=0.0, frame_features=None):
+def worker_init_fn(worker_id):
+    random.seed(SEED + worker_id)
+    np.random.seed(SEED + worker_id)
+
+def show_time(start_time, current_time):
+    sec = int(current_time - start_time)
+    return f"{sec // 3600}时{sec % 3600 // 60}分{sec % 60}秒"
+
+def nt_xent_loss(z1, z2, temperature=0.5, frame_features=None, batch_indices=None, threshold=0.0):
     batch_size = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
     sim = torch.mm(z, z.T)
-    mask = torch.eye(2*batch_size, device=sim.device).bool()
-    pos_mask = torch.zeros_like(sim, dtype=torch.bool)
-    for i in range(batch_size):
-        pos_mask[i, i+batch_size] = True
-        pos_mask[i+batch_size, i] = True
-    masked_count = 0
+    # 向量化构建 pos/neg mask
+    eye = torch.eye(2 * batch_size, dtype=torch.bool, device=sim.device)
+    pos_mask = torch.zeros_like(eye)
+    idx = torch.arange(batch_size, device=sim.device)
+    pos_mask[idx, idx + batch_size] = True
+    pos_mask[idx + batch_size, idx] = True
+    neg_mask = ~(eye | pos_mask)
+    # 每次现算当前 batch 距离：逐帧 L2 -> 对 T 取平均（度量与原版一致）
+    invalid = torch.zeros_like(eye)
     if threshold > 0:
-        cur_feat = frame_features[batch_indices]       # (B, T, 26) 查表
-        if cur_feat is not None:
-            # 逐帧差: (B, B, T, 26)
-            diff = cur_feat[:, None, :, :] - cur_feat[None, :, :, :]
-            # 欧氏距离: 对 26 维求 L2 范数 -> 每帧特征距离标量 (B, B, T)
-            frame_dist = np.linalg.norm(diff, axis=-1)
-            # 对 T 帧聚合 -> 窗口间距离 (B, B)
-            dists = frame_dist.mean(axis=-1)           # 取平均（默认）
-            # 填充(2B,2B)
-            full_dists = np.zeros((2*batch_size, 2*batch_size), dtype=np.float32)
-            full_dists[:batch_size, :batch_size] = dists
-            full_dists[:batch_size, batch_size:] = dists
-            full_dists[batch_size:, :batch_size] = dists
-            full_dists[batch_size:, batch_size:] = dists
-            invalid_neg_mask = (full_dists < threshold) & (~pos_mask.cpu().numpy())
-            invalid = torch.tensor(invalid_neg_mask, device=sim.device)
-            sim[invalid] = -1e9
-            masked_count = invalid_neg_mask[~mask.cpu().numpy()].sum()
-    sim = sim[~mask].view(2*batch_size, -1)
-    pos_sim = sim[pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, 1)
-    neg_sim = sim[~pos_mask[~mask].view(2*batch_size, -1)].view(2*batch_size, -1)
-    pos_sim_raw = pos_sim.clone()
-    neg_sim_raw = neg_sim.clone()
-    pos_sim = pos_sim / temperature
-    neg_sim = neg_sim / temperature
-    logits = torch.cat([pos_sim, neg_sim], dim=1)
-    labels = torch.zeros(2*batch_size, dtype=torch.long, device=sim.device)
+        fb = torch.as_tensor(frame_features[batch_indices],
+                             dtype=torch.float32, device=sim.device)   # (B,T,26)
+        d = torch.zeros(batch_size, batch_size, device=sim.device)
+        for t in range(fb.shape[1]):
+            d += torch.cdist(fb[:, t], fb[:, t])
+        d /= fb.shape[1]
+        invalid = (d.repeat(2, 2) < threshold) & neg_mask
+    s = sim / temperature
+    s[invalid] = -1e9
+    logits = torch.cat([s[pos_mask].view(2 * batch_size, 1),
+                        s[neg_mask].view(2 * batch_size, -1)], dim=1)
+    labels = torch.zeros(2 * batch_size, dtype=torch.long, device=sim.device)
     loss = F.cross_entropy(logits, labels)
-    pos_avg = pos_sim_raw.mean().item()
-    neg_valid = neg_sim_raw[neg_sim_raw > -1e8]
-    if neg_valid.numel() > 0:
-        neg_avg = neg_valid.mean().item()
-    else:
-        neg_avg = 0.0
+    pos_avg = sim[pos_mask].mean().item()
+    neg_v = sim[neg_mask][~invalid[neg_mask]]
+    neg_avg = neg_v.mean().item() if neg_v.numel() > 0 else 0.0
     diff = pos_avg - neg_avg
+    masked_count = invalid[neg_mask].sum().item()
     return loss, pos_avg, neg_avg, diff, masked_count
+
+def precompute_frame_features(raw_windows):
+    # 每次都现算，不读缓存不落盘
+    N, T = raw_windows.shape[0], raw_windows.shape[1]
+    feats = np.zeros((N, T, 26), dtype=np.float32)
+    for n in range(N):
+        for t in range(T):
+            try:
+                feats[n, t] = Feature(raw_windows[n, t].tolist()).get_all_features()
+            except Exception as e:
+                feats[n, t] = 0.0
+                print(f"帧特征提取失败 n={n},t={t}: {e}")
+    print(f"帧特征计算完成: {feats.shape}")
+    return feats
 
 class ContrastiveDatasetFromFile(Dataset):
     def __init__(self, npz_path, window_size=6, transform_params=None):
@@ -165,8 +174,11 @@ class ContrastiveDatasetFromFile(Dataset):
             return torch.FloatTensor(data).permute(2, 0, 1)
         return to_stgcn(anchor), to_stgcn(positive), idx
 
-def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5, diversity_threshold=0.0,select = 'STGCN'):
+def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0.5,
+                      diversity_threshold=0.0, select='STGCN', num_workers=0,
+                      resume_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(SEED)
     #根据选择模型更换存储路径
     if select == 'STGCN':
         save_dir = 'D:/Dataset/sprint/result/model/ST-GCN'
@@ -188,17 +200,24 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
         save_dir = 'D:/Dataset/sprint/result/model/TCN'
         MODEL_SAVE_N = 'best_7_1_tcn.pth'
         model = module.TCNEncoder(output_dim=64).to(device) 
-    elif select == 'Trans':
-        save_dir = 'D:/Dataset/sprint/result/model/Transformer'
-        MODEL_SAVE_N = 'best_7_1_trans.pth'
-        model = module.SkeletonTransformerEncoder(
-        in_channels=2, window_size=7, num_joints=17, hop_size=2,
-        d_model=128, nhead=4, num_layers=2,
-        dim_feedforward=256, output_dim=64, dropout=0.2
-        ).to(device)
+    elif select == 'CTR':
+        save_dir = 'D:/Dataset/sprint/result/model/CTR-GCN'
+        MODEL_SAVE_N = 'best_9_2_ctr.pth'
+        model = module.CTRGCNEncoder(in_channels=2, output_dim=64).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    ckpt_path = os.path.join(save_dir, 'last_checkpoint.pth')
+    start_epoch = 0
     best_loss = float('inf')
+    if resume_path and os.path.exists(resume_path):
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optim'])
+        start_epoch = ckpt['epoch'] + 1
+        best_loss = ckpt['best_loss']
+        print(f"续训: 从 epoch {start_epoch} 开始, best_loss={best_loss:.6f}")
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True,
+                        num_workers=num_workers, pin_memory=(device.type == 'cuda'),
+                        persistent_workers=(num_workers > 0), worker_init_fn=worker_init_fn)
     os.makedirs(save_dir, exist_ok=True)
     loss_history = []
     pos_history = []
@@ -206,19 +225,10 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     diff_history = []
 
     raw_windows = dataset.windows
+    print(f"使用模型：{select}")
+    frame_features = precompute_frame_features(raw_windows)
 
-    print("预计算全数据集逐帧特征 (N, T, 26)...")
-    T = raw_windows.shape[1]
-    frame_features = np.zeros((len(raw_windows), T, 26), dtype=np.float32)
-    for n in range(len(raw_windows)):
-        for t in range(T):
-            try:
-                frame_features[n, t] = Feature(raw_windows[n, t].tolist()).get_all_features() #帧数据，帧
-            except Exception:
-                frame_features[n, t] = 0.0
-    print(f"预计算完成: {frame_features.shape}")
-
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0.0
         total_pos = 0.0
@@ -235,10 +245,9 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             z2 = model(positive)
             loss, pos_avg, neg_avg, diff, masked_count = nt_xent_loss(
                 z1, z2, temperature,
-                raw_windows=raw_windows,
+                frame_features=frame_features,
                 batch_indices=batch_indices,
-                threshold=diversity_threshold,
-                frame_features=frame_features          # ===== 改动2：传入预计算特征 =====
+                threshold=diversity_threshold
             )
             optimizer.zero_grad()
             loss.backward()
@@ -262,6 +271,9 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
             print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}, "
                 f"PosSim: {avg_pos:.4f}, NegSim: {avg_neg:.4f}, Diff: {avg_diff:.4f}, "
                 f"MaskedNeg: {total_masked}/{total_neg_pairs} ({total_masked/total_neg_pairs*100:.1f}%)")
+        # best 模型保持纯 state_dict，兼容原下游加载；完整状态存 last_checkpoint 供续训
+        torch.save({'model': model.state_dict(), 'optim': optimizer.state_dict(),
+                    'epoch': epoch, 'best_loss': best_loss}, ckpt_path)
         if avg_loss < best_loss:
             best_loss = avg_loss
             torch.save(model.state_dict(), os.path.join(save_dir, MODEL_SAVE_N))
@@ -269,7 +281,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
     print("训练完成")
     from thop import profile, clever_format
     model.eval()
-    dummy = torch.randn(1, 2, 7, 17).to(device)
+    dummy = torch.randn(1, 2, 9, 17).to(device)
     flops, params = profile(model, inputs=(dummy,), verbose=False)
     flops_f, params_f = clever_format([flops, params], "%.3f")
     print(f"参数量: {params_f} | FLOPs: {flops_f}")
@@ -293,6 +305,7 @@ def train_contrastive(dataset, epochs=100, batch_size=32, lr=1e-3, temperature=0
 
 if __name__ == '__main__':
     start_time = time.time()
+    set_seed(0) #设置种子
     npz_path = 'D:/Dataset/sprint/result/window_data/dataset_9_2.npz'
     dataset = ContrastiveDatasetFromFile(
         npz_path,
@@ -301,10 +314,11 @@ if __name__ == '__main__':
                         'reverse':0.15, 'GB':0.25, 'shear':0.1, 'flip':0.15, 'delete':0.15}
     )
 
-    train_contrastive(dataset, epochs=150, batch_size=128, lr=0.001, temperature=0.2, diversity_threshold=0.9,
-                    select='STGCN')  #输入想使用的模型
+    train_contrastive(dataset, epochs=100, batch_size=512, lr=0.001, temperature=0.3,
+                    diversity_threshold=0.9, select='CTR', num_workers=4)
+                    # resume_path='D:/Dataset/sprint/result/model/CTR-GCN/last_checkpoint.pth'
     """
-    STGCN,GRU,LSTM,MLP,TCN,Trans
+    STGCN,GRU,LSTM,MLP,TCN,CTR
     """
     elapsed = show_time(start_time, time.time())
-    print(f"Total time: {elapsed}")                                                     
+    print(f"Total time: {elapsed}")
